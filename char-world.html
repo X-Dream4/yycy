@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>角色世界</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="char-world.css"/>
+</head>
+<body>
+<div id="cw-app" v-cloak>
+
+  <!-- 角色列表页 -->
+  <div v-if="!unlockingChar">
+    <div class="cw-topbar">
+      <button class="cw-icon-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+      <div class="cw-topbar-title">角色世界</div>
+    </div>
+    <div class="cw-body">
+      <div class="char-list" v-if="allChars.length">
+        <div class="char-item" v-for="char in allChars" :key="char.id" @click="selectChar(char)">
+          <div class="char-avatar" :style="char.avatar ? `background-image:url(${char.avatar})` : ''">
+            <span v-if="!char.avatar">{{ char.name[0] }}</span>
+          </div>
+          <div class="char-info">
+            <div class="char-name">{{ char.name }}</div>
+            <div class="char-lock-type">{{ getLockTypeLabel(char.id) }}</div>
+          </div>
+          <i data-lucide="chevron-right" style="width:16px;height:16px;color:#ccc;"></i>
+        </div>
+      </div>
+      <div class="cw-empty" v-else>
+        <i data-lucide="smartphone" style="width:40px;height:40px;color:#ddd;"></i>
+        <div>还没有角色</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 解锁页 -->
+  <div v-else class="unlock-page">
+    <button class="unlock-back" @click="unlockingChar=null; unlockError=''; unlockInput=''; unlockPattern=[]"><i data-lucide="arrow-left"></i></button>
+
+    <div class="unlock-avatar" :style="unlockingChar.avatar ? `background-image:url(${unlockingChar.avatar})` : ''">
+      <span v-if="!unlockingChar.avatar">{{ unlockingChar.name[0] }}</span>
+    </div>
+    <div class="unlock-name">{{ unlockingChar.name }}</div>
+
+    <!-- 无密码 -->
+    <div v-if="currentLock.lockType==='none'" style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+      <div class="unlock-hint">无需解锁，直接进入</div>
+      <button class="unlock-btn" @click="enterCharWorld">进入</button>
+    </div>
+
+    <!-- 数字密码 -->
+    <div v-else-if="currentLock.lockType==='pin'" style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+      <div class="unlock-hint">输入数字密码</div>
+      <div class="pin-dots">
+        <div v-for="i in currentLock.pin.length" :key="i" class="pin-dot" :class="{filled: unlockInput.length>=i}"></div>
+      </div>
+      <div class="unlock-error">{{ unlockError }}</div>
+      <div class="pin-numpad">
+        <button v-for="n in [1,2,3,4,5,6,7,8,9]" :key="n" class="pin-key" @click="pinPress(String(n))">{{ n }}</button>
+        <button class="pin-key empty"></button>
+        <button class="pin-key" @click="pinPress('0')">0</button>
+        <button class="pin-key del" @click="pinDel"><i data-lucide="delete"></i></button>
+      </div>
+    </div>
+
+    <!-- 图案密码 -->
+    <div v-else-if="currentLock.lockType==='pattern'" style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+      <div class="unlock-hint">绘制解锁图案</div>
+      <div class="unlock-error">{{ unlockError }}</div>
+      <div class="pattern-wrap"
+        @mousedown="unlockPatternStart($event)"
+        @mousemove="unlockPatternMove($event)"
+        @mouseup="unlockPatternEnd"
+        @mouseleave="unlockPatternEnd"
+        @touchstart.prevent="unlockPatternStart($event)"
+        @touchmove.prevent="unlockPatternMove($event)"
+        @touchend="unlockPatternEnd">
+        <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;">
+          <polyline v-if="unlockPatternLines" :points="unlockPatternLines" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+          <line v-if="unlockPatternDrawing && unlockCurrentPos && unlockPattern.length" :x1="patternDotPos[unlockPattern[unlockPattern.length-1]-1].x" :y1="patternDotPos[unlockPattern[unlockPattern.length-1]-1].y" :x2="unlockCurrentPos.x" :y2="unlockCurrentPos.y" stroke="#aaa" stroke-width="2" stroke-dasharray="4"/>
+        </svg>
+        <div v-for="(pos,idx) in patternDotPos" :key="idx" class="pattern-dot" :class="{active: unlockPattern.includes(idx+1)}" :style="{left: pos.x-24+'px', top: pos.y-24+'px'}">
+          <div class="pattern-dot-inner"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 问题解锁 -->
+    <div v-else-if="currentLock.lockType==='question'" style="display:flex;flex-direction:column;align-items:center;gap:16px;width:100%;max-width:320px;">
+      <div class="unlock-hint" style="font-size:15px;font-weight:600;color:#333;">{{ currentLock.question }}</div>
+      <input class="question-input" v-model="unlockInput" placeholder="输入答案..." @keydown.enter="checkAnswer"/>
+      <div class="unlock-error">{{ unlockError }}</div>
+      <button class="unlock-btn" @click="checkAnswer" :disabled="!unlockInput.trim()">确认</button>
+    </div>
+
+    <!-- 金手指 -->
+    <button v-if="currentLock.goldenFinger" class="golden-finger" @click="triggerGoldenFinger">🗝</button>
+
+    <!-- 黑客破解动画 -->
+    <div v-if="hackingShow" style="position:fixed;inset:0;background:#000;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:monospace;">
+      <div style="color:#00ff41;font-size:13px;line-height:2;text-align:left;width:85%;max-width:360px;">
+        <div v-for="(line, i) in hackLines" :key="i" :style="i===hackLines.length-1?'color:#fff;':'color:#00ff41;'">{{ line }}</div>
+      </div>
+      <div style="margin-top:24px;color:#00ff41;font-size:12px;letter-spacing:2px;">
+        <span v-if="hackProgress < 100">CRACKING... {{ hackProgress }}%</span>
+        <span v-else style="color:#fff;font-size:16px;font-weight:700;">ACCESS GRANTED ✓</span>
+      </div>
+      <div style="margin-top:12px;width:260px;height:4px;background:#111;border-radius:2px;overflow:hidden;">
+        <div :style="`width:${hackProgress}%;height:100%;background:#00ff41;border-radius:2px;transition:width 0.1s;`"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="char-world.js"></script>
+</body>
+</html>

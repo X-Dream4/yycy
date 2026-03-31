@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>世界书馆</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="worldbook.css" />
+</head>
+<body>
+<div id="worldbook-app" v-cloak>
+
+  <div class="wb-topbar">
+    <button class="wb-back-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+    <div class="wb-title">世界书馆</div>
+<button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+    <button class="wb-add-btn" @click="openAdd"><i data-lucide="plus"></i></button>
+  </div>
+
+  <!-- 分类栏 -->
+  <div class="wb-cat-bar">
+    <div class="wb-cat-item" :class="{active: currentCat==='全部'}" @click="currentCat='全部'">全部</div>
+    <div class="wb-cat-item" v-for="cat in categories" :key="cat" :class="{active: currentCat===cat}" @click="currentCat=cat">
+      {{ cat }}
+      <span class="wb-cat-del" @click.stop="deleteCategory(cat)"><i data-lucide="x" style="width:10px;height:10px;"></i></span>
+    </div>
+    <div class="wb-cat-item wb-cat-add" @click="catFormShow=true"><i data-lucide="plus" style="width:14px;height:14px;"></i></div>
+  </div>
+
+  <div class="wb-list">
+    <div class="wb-empty" v-if="!filteredBooks.length">
+      <i data-lucide="book-open" style="width:40px;height:40px;color:#ccc;"></i>
+      <span>{{ currentCat==='全部' ? '还没有世界书，点击右上角添加' : '这个分类还没有世界书' }}</span>
+    </div>
+    <div class="wb-item" v-for="book in filteredBooks" :key="book.id" @click="openEdit(book)">
+      <div class="wb-item-left">
+        <div class="wb-item-type" :class="'type-'+book.type">{{ typeLabel(book.type) }}</div>
+        <div class="wb-item-info">
+          <div class="wb-item-name">{{ book.name }}</div>
+          <div class="wb-item-cat" v-if="book.category">{{ book.category }}</div>
+          <div class="wb-item-keywords" v-if="book.keywords">触发词：{{ book.keywords }}</div>
+          <div class="wb-item-keywords" v-else style="color:#ccc;">无触发词（始终生效）</div>
+          <div v-if="book.globalInject" style="font-size:10px;color:#fff;background:#111;border-radius:7px;padding:2px 6px;display:inline-block;margin-top:2px;">全局注入</div>
+        </div>
+      </div>
+      <div class="wb-item-right" style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+        <button class="wb-del-btn" @click.stop="deleteBook(book)"><i data-lucide="trash-2"></i></button>
+        <button @click.stop="toggleGlobalInject(book)"
+          style="font-size:10px;padding:3px 8px;border-radius:8px;border:1.5px solid;cursor:pointer;white-space:nowrap;"
+          :style="book.globalInject ? 'background:#111;color:#fff;border-color:#111;' : 'background:#fff;color:#888;border-color:#e5e5ea;'">
+          {{ book.globalInject ? '全局已开' : '全局注入' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加/编辑弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="formShow" @click.self="formShow=false">
+      <div class="modal-box">
+        <div class="modal-title">{{ editIndex === -1 ? '添加世界书' : '编辑世界书' }}</div>
+        <div class="modal-item">
+          <label>名称</label>
+          <input class="modal-input" v-model="form.name" placeholder="世界书名称..." />
+        </div>
+        <div class="modal-item">
+          <label>分类</label>
+          <select class="modal-input" v-model="form.category" style="padding:10px 12px;">
+            <option value="">无分类</option>
+            <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
+          </select>
+        </div>
+        <div class="modal-item">
+          <label>类型</label>
+          <div class="wb-type-row">
+            <div class="wb-type-btn" :class="{active: form.type==='jailbreak'}" @click="form.type='jailbreak'">破限</div>
+            <div class="wb-type-btn" :class="{active: form.type==='worldview'}" @click="form.type='worldview'">世界观</div>
+            <div class="wb-type-btn" :class="{active: form.type==='persona'}" @click="form.type='persona'">人设补充</div>
+            <div class="wb-type-btn" :class="{active: form.type==='prompt'}" @click="form.type='prompt'">提示词</div>
+          </div>
+          <div class="wb-type-desc">
+            <span v-if="form.type==='jailbreak'">插入位置：系统提示词最前面，优先级最高</span>
+            <span v-if="form.type==='worldview'">插入位置：系统提示词世界观部分</span>
+            <span v-if="form.type==='persona'">插入位置：系统提示词角色人设部分</span>
+            <span v-if="form.type==='prompt'">插入位置：系统提示词末尾</span>
+          </div>
+        </div>
+        <div class="modal-item">
+          <label>关键词触发（多个用逗号分隔，不填则始终生效）</label>
+          <input class="modal-input" v-model="form.keywords" placeholder="例：魔法,龙,王国..." />
+        </div>
+        <div class="modal-item">
+          <label>内容</label>
+          <textarea class="modal-textarea" v-model="form.content" placeholder="世界书内容..."></textarea>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="formShow=false">取消</button>
+          <button class="modal-btn confirm" @click="saveBook">保存</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 新建分类弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="catFormShow" @click.self="catFormShow=false">
+      <div class="modal-box" style="max-width:300px;">
+        <div class="modal-title">新建分类</div>
+        <div class="modal-item">
+          <input class="modal-input" v-model="newCatName" placeholder="分类名称..." @keyup.enter="addCategory" />
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="catFormShow=false">取消</button>
+          <button class="modal-btn confirm" @click="addCategory">创建</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+
+<script src="db.js"></script>
+<script src="worldbook.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #f2f2f7; min-height: 100vh; font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif; }
+body.dark { background: #1a1a1a; color: #eee; }
+[v-cloak] { display: none; }
+.cw-topbar { position: fixed; top: 0; left: 0; right: 0; height: 52px; background: rgba(255,255,255,0.92); backdrop-filter: blur(16px); display: flex; align-items: center; padding: 0 16px; gap: 10px; z-index: 100; border-bottom: 1px solid rgba(0,0,0,0.06); }
+body.dark .cw-topbar { background: rgba(28,28,28,0.95); border-bottom-color: rgba(255,255,255,0.06); }
+.cw-topbar-title { flex: 1; font-size: 16px; font-weight: 700; color: #111; }
+body.dark .cw-topbar-title { color: #eee; }
+.cw-icon-btn { width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #555; }
+body.dark .cw-icon-btn { color: #aaa; }
+.cw-body { margin-top: 52px; padding: 14px 16px 80px; }
+.char-list { display: flex; flex-direction: column; gap: 10px; }
+.char-item { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: #fff; border-radius: 16px; cursor: pointer; transition: background 0.15s; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.char-item:hover { background: #f5f5f5; }
+body.dark .char-item { background: #2a2a2a; }
+body.dark .char-item:hover { background: #333; }
+.char-avatar { width: 52px; height: 52px; border-radius: 50%; background: #e0e0e0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: #888; flex-shrink: 0; }
+body.dark .char-avatar { background: #444; color: #aaa; }
+.char-info { flex: 1; min-width: 0; }
+.char-name { font-size: 15px; font-weight: 600; color: #111; }
+body.dark .char-name { color: #eee; }
+.char-lock-type { font-size: 12px; color: #aaa; margin-top: 3px; }
+.unlock-page { position: fixed; inset: 0; background: #f2f2f7; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 200; padding: 24px; gap: 24px; }
+.unlock-avatar { width: 80px; height: 80px; border-radius: 50%; background: #e0e0e0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; color: #888; }
+.unlock-name { font-size: 20px; font-weight: 700; color: #111; }
+body.dark .unlock-name { color: #eee; }
+.unlock-hint { font-size: 13px; color: #aaa; text-align: center; }
+.unlock-back { position: absolute; top: 20px; left: 16px; width: 36px; height: 36px; border-radius: 50%; border: none; background: rgba(0,0,0,0.06); cursor: pointer; display: flex; align-items: center; justify-content: center; color: #555; }
+.pin-dots { display: flex; gap: 16px; margin: 2px 0; }
+.pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #ccc; transition: all 0.15s; }
+.pin-dot.filled { background: #111; border-color: #111; }
+.pin-numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; width: 260px; justify-items: center; }
+.pin-key { width: 72px; height: 72px; border-radius: 50%; border: none; background: #fff; font-size: 22px; font-weight: 500; color: #111; cursor: pointer; transition: all 0.15s; box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: center; }
+.pin-key:active { background: #e5e5ea; transform: scale(0.94); }
+body.dark .pin-key { background: #2a2a2a; color: #eee; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+body.dark .pin-key:active { background: #333; }
+.pin-key.del { font-size: 16px; color: #555; background: rgba(0,0,0,0.04); box-shadow: none; }
+body.dark .pin-key.del { background: rgba(255,255,255,0.06); color: #aaa; }
+.pin-key.empty { background: transparent; box-shadow: none; cursor: default; }
+.pattern-wrap { position: relative; width: 240px; height: 240px; user-select: none; }
+.pattern-dot { position: absolute; width: 48px; height: 48px; border-radius: 50%; border: 2px solid #ccc; display: flex; align-items: center; justify-content: center; transition: all 0.1s; background: #fff; }
+body.dark .pattern-dot { background: #2a2a2a; border-color: #555; }
+.pattern-dot.active { border-color: #111; background: #111; }
+body.dark .pattern-dot.active { background: #eee; border-color: #eee; }
+.pattern-dot-inner { width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+.pattern-dot.active .pattern-dot-inner { background: #fff; }
+.question-input { border: 1.5px solid #e5e5ea; border-radius: 12px; padding: 12px 16px; font-size: 15px; outline: none; color: #111; background: #fff; width: 100%; max-width: 280px; font-family: inherit; text-align: center; }
+body.dark .question-input { background: #2a2a2a; border-color: #444; color: #eee; }
+.unlock-btn { padding: 14px 48px; border-radius: 24px; border: none; background: #111; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.unlock-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+body.dark .unlock-btn { background: #eee; color: #111; }
+.unlock-error { font-size: 13px; color: #e53e3e; min-height: 20px; text-align: center; }
+.golden-finger { position: fixed; bottom: 32px; right: 20px; width: 44px; height: 44px; border-radius: 50%; border: none; background: rgba(255,215,0,0.15); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+.cw-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 80px 0; color: #bbb; font-size: 14px; text-align: center; }

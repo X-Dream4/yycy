@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>次元论坛</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="forum.css" />
+</head>
+<body>
+<div class="forum-loading-mask" id="forumLoadingMask">
+  <div class="forum-tangle">
+    <div class="forum-tangle-ring"></div>
+    <div class="forum-tangle-ring"></div>
+  </div>
+  <div class="forum-loading-text">连接中…</div>
+</div>
+
+<div id="forum-app" v-cloak>
+
+  <!-- ===== 底部导航 ===== -->
+  <div class="forum-tabbar">
+    <button class="forum-tabbar-btn" :class="{active: mainTab==='home'}" @click="mainTab='home'">
+      <i data-lucide="home"></i><span>首页</span>
+    </button>
+    <button class="forum-tabbar-btn" :class="{active: mainTab==='hot'}" @click="mainTab='hot'">
+      <i data-lucide="flame"></i><span>热搜</span>
+    </button>
+    <button class="forum-tabbar-btn" :class="{active: mainTab==='search'}" @click="mainTab='search'">
+      <i data-lucide="search"></i><span>搜索</span>
+    </button>
+    <button class="forum-tabbar-btn" :class="{active: mainTab==='messages'}" @click="mainTab='messages'">
+      <i data-lucide="message-circle"></i><span>消息</span>
+    </button>
+    <button class="forum-tabbar-btn" :class="{active: mainTab==='my'}" @click="mainTab='my'">
+      <i data-lucide="user"></i><span>我的</span>
+    </button>
+  </div>
+
+  <!-- ===== 首页 ===== -->
+  <div class="forum-body" v-show="mainTab==='home'">
+    <div class="forum-topbar">
+      <div class="forum-topbar-title">次元论坛</div>
+<button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+      <button class="forum-topbar-btn" @click="goBack" title="返回"><i data-lucide="arrow-left"></i></button>
+    </div>
+    <div class="forum-cat-bar">
+      <div class="forum-cat-chip" v-for="cat in categories" :key="cat.name"
+        :class="{active: currentCat===cat.name}" @click="currentCat=cat.name">
+        {{ cat.name }}
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;padding:0 14px 10px;">
+      <button class="forum-topbar-btn primary" @click="generatePosts" :disabled="generating" title="AI生成帖子">
+        <i data-lucide="sparkles"></i>
+      </button>
+      <span style="font-size:12px;color:#aaa;flex:1;">{{ generating ? 'AI生成中...' : '点击生成帖子' }}</span>
+      <button class="forum-topbar-btn primary" @click="openPostForm" title="发帖">
+        <i data-lucide="plus"></i>
+      </button>
+    </div>
+    <div class="gen-loading" v-if="generating">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="forum-post-list" v-if="!generating">
+      <div class="page-empty" v-if="!currentCatPosts.length">
+        <i data-lucide="inbox"></i>
+        <span>这个分类还没有帖子</span>
+        <div style="display:flex;gap:10px;margin-top:4px;">
+          <button class="forum-topbar-btn primary" @click="generatePosts" style="width:auto;padding:6px 14px;border-radius:20px;font-size:12px;display:flex;align-items:center;gap:4px;">
+            <i data-lucide="sparkles" style="width:14px;height:14px;"></i> 生成
+          </button>
+          <button class="forum-topbar-btn primary" @click="openPostForm" style="width:auto;padding:6px 14px;border-radius:20px;font-size:12px;display:flex;align-items:center;gap:4px;">
+            <i data-lucide="plus" style="width:14px;height:14px;"></i> 发帖
+          </button>
+        </div>
+      </div>
+      <div class="forum-post-item" v-for="post in currentCatPosts" :key="post.id"
+        @click="openPostDetail(post)">
+        <div class="forum-post-meta">
+          <span class="forum-post-author" @click.stop="openPM(post.author, post)">{{ post.author }}</span>
+          <span class="forum-post-cat-badge">{{ post.cat }}</span>
+          <span class="forum-post-time-small">{{ formatTime(post.time) }}</span>
+        </div>
+        <div class="forum-post-title">{{ post.title }}</div>
+        <div class="forum-post-text">{{ post.content }}</div>
+        <div class="forum-post-footer">
+          <span class="forum-post-stat"><i data-lucide="message-circle"></i>{{ post.replies ? post.replies.length : 0 }}</span>
+          <span class="forum-post-stat"><i data-lucide="heart"></i>{{ post.likes || 0 }}</span>
+          <button class="forum-post-more-btn" @click.stop="openPostMenu(post)"><i data-lucide="more-horizontal"></i></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 热搜页 ===== -->
+  <div class="forum-body" v-show="mainTab==='hot'">
+    <div class="forum-topbar">
+      <div class="forum-topbar-title">热搜</div>
+    </div>
+    <div class="hotlist-tabs">
+      <div class="hotlist-tab" :class="{active: hotTab==='real'}" @click="hotTab='real'">实时热搜</div>
+      <div class="hotlist-tab" :class="{active: hotTab==='dimension'}" @click="hotTab='dimension'">次元热搜</div>
+    </div>
+    <div v-if="hotTab==='real'">
+      <div style="display:flex;align-items:center;padding:6px 14px 0;">
+        <span style="font-size:11px;color:#bbb;flex:1;">数据每2小时自动更新</span>
+        <button @click="fetchHotList(hotPlatform, true)" :disabled="hotLoading"
+          style="display:flex;align-items:center;gap:4px;background:transparent;border:none;cursor:pointer;color:#aaa;font-size:11px;">
+          <i data-lucide="refresh-cw" style="width:12px;height:12px;"></i>
+          刷新
+        </button>
+      </div>
+      <div class="hotlist-platform-bar">
+        <div class="hotlist-platform-chip" v-for="p in hotPlatformsOrdered" :key="p.key"
+          :class="{active: hotPlatform===p.key}" @click="switchHotPlatform(p.key)">
+          {{ p.label }}
+        </div>
+      </div>
+      <div class="hotlist-loading" v-if="hotLoading"><span></span><span></span><span></span></div>
+      <div v-else-if="hotError" style="text-align:center;padding:30px 16px;">
+        <div style="font-size:13px;color:#e53e3e;margin-bottom:10px;">{{ hotError }}</div>
+        <button @click="fetchHotList(hotPlatform)" style="padding:8px 18px;border-radius:20px;background:#111;color:#fff;border:none;font-size:12px;cursor:pointer;">重新加载</button>
+      </div>
+      <div class="hotlist-empty" v-else-if="!hotList.length">暂无数据</div>
+      <div class="hotlist-list" v-else>
+        <div class="hotlist-item" v-for="(item, idx) in hotList" :key="idx" style="flex-direction:column;align-items:flex-start;gap:4px;">
+          <div style="display:flex;align-items:center;width:100%;gap:12px;">
+            <div class="hotlist-rank" :class="idx===0?'top1':idx===1?'top2':idx===2?'top3':''">{{ idx+1 }}</div>
+            <div class="hotlist-title" style="flex:1;cursor:pointer;" @click="openHotDetail(item)">{{ item.title }}</div>
+            <div class="hotlist-hot">{{ item.hot || '' }}</div>
+            <button v-if="detectNeedTranslate(item.title)"
+              @click="translateText(item.title, idx)"
+              :disabled="translating[idx]"
+              style="flex-shrink:0;background:transparent;border:1px solid #e5e5ea;border-radius:6px;padding:2px 6px;font-size:10px;color:#888;cursor:pointer;white-space:nowrap;">
+              {{ translating[idx] ? '...' : translations[idx] && translations[idx]!=='hide' ? '收起' : '译' }}
+            </button>
+          </div>
+          <div v-if="translations[idx] && translations[idx]!=='hide'"
+            style="font-size:12px;color:#aaa;padding:4px 8px 4px 36px;line-height:1.5;border-left:2px solid #e5e5ea;margin-left:2px;">
+            {{ translations[idx] }}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div v-if="hotTab==='dimension'" style="padding:14px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <span style="font-size:13px;color:#888;flex:1;">AI生成跨次元热搜榜</span>
+        <button class="forum-topbar-btn primary" @click="generateDimensionHot" :disabled="dimHotLoading">
+          <i data-lucide="sparkles"></i>
+        </button>
+      </div>
+      <div class="hotlist-loading" v-if="dimHotLoading"><span></span><span></span><span></span></div>
+      <div class="hotlist-empty" v-else-if="!dimHotList.length">点击右上角图标生成次元热搜</div>
+      <div class="hotlist-list" v-else>
+        <div class="hotlist-item" v-for="(item, idx) in dimHotList" :key="idx">
+          <div class="hotlist-rank" :class="idx===0?'top1':idx===1?'top2':idx===2?'top3':''">{{ idx+1 }}</div>
+          <div style="flex:1;">
+            <div class="hotlist-title">{{ item.title }}</div>
+            <div style="font-size:11px;color:#aaa;margin-top:2px;">{{ item.dimension }}</div>
+          </div>
+          <div class="hotlist-hot">{{ item.heat || '' }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 搜索页 ===== -->
+  <div class="forum-body" v-show="mainTab==='search'">
+    <div class="forum-topbar">
+      <div class="forum-topbar-title">搜索</div>
+    </div>
+    <div class="search-page">
+      <div class="search-type-row">
+        <button class="search-type-btn" :class="{active: searchType==='forum'}" @click="searchType='forum'">论坛帖子</button>
+        <button class="search-type-btn" :class="{active: searchType==='ai'}" @click="searchType='ai'">AI搜索</button>
+      </div>
+      <div class="search-input-row">
+        <input class="search-input" v-model="searchQuery"
+          :placeholder="searchType==='forum'?'搜索论坛帖子...':'输入任何问题，AI来回答...'"
+          @keydown.enter="doSearch" />
+        <button class="search-btn" @click="doSearch">搜索</button>
+      </div>
+      <div class="search-loading" v-if="searchLoading">AI思考中...</div>
+      <div v-else-if="searchType==='forum'">
+        <div class="page-empty" v-if="searchDone && !searchResults.length">
+          <i data-lucide="search-x"></i>
+          <span>没有找到相关帖子</span>
+        </div>
+        <div class="search-result-list">
+          <div class="search-result-item" v-for="post in searchResults" :key="post.id" @click="openPostDetail(post)">
+            <div class="search-result-title">{{ post.title }}</div>
+            <div class="search-result-desc">{{ post.content.slice(0,80) }}{{ post.content.length>80?'...':'' }}</div>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="searchType==='ai'">
+        <div class="page-empty" v-if="!aiSearchResult">
+          <i data-lucide="bot"></i>
+          <span>输入问题，让AI来回答</span>
+        </div>
+        <div v-if="aiSearchResult" style="background:#fff;border-radius:14px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+          <div style="font-size:13px;font-weight:700;color:#aaa;margin-bottom:8px;">AI回答</div>
+          <div style="font-size:14px;color:#333;line-height:1.8;white-space:pre-wrap;">{{ aiSearchResult }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 消息页 ===== -->
+  <div class="forum-body" v-show="mainTab==='messages'">
+    <div class="forum-topbar">
+      <div class="forum-topbar-title">消息</div>
+    </div>
+    <div class="msg-list-page">
+      <div class="msg-empty" v-if="!conversations.length">
+        <i data-lucide="message-circle" style="width:40px;height:40px;color:#ddd;display:block;margin:0 auto 8px;"></i>
+        <div>暂无私信，点击帖主名字开始私聊</div>
+      </div>
+      <div class="msg-list-item" v-for="conv in conversations" :key="conv.id" @click="openConversation(conv)">
+        <div class="msg-list-avatar">{{ conv.name[0] }}</div>
+        <div class="msg-list-info">
+          <div class="msg-list-name">{{ conv.name }}</div>
+          <div class="msg-list-preview">{{ conv.messages && conv.messages.length ? conv.messages[conv.messages.length-1].content : '点击开始对话' }}</div>
+        </div>
+        <div class="msg-list-time">{{ conv.messages && conv.messages.length ? formatTime(conv.messages[conv.messages.length-1].time) : '' }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 我的页 ===== -->
+  <div class="forum-body" v-show="mainTab==='my'">
+    <div class="forum-topbar">
+      <div class="forum-topbar-title">我的</div>
+    </div>
+    <div class="my-page">
+      <div class="my-profile-card">
+        <div class="my-username-row">
+          <div class="my-at-icon">@</div>
+          <input class="my-username-input" v-model="myProfile.name" placeholder="设置用户名..." @change="saveProfile" />
+        </div>
+        <div class="my-stats-row">
+          <div class="my-stat-item">
+            <div class="my-stat-num">{{ myProfile.followers || 0 }}</div>
+            <div class="my-stat-label">粉丝</div>
+          </div>
+          <div class="my-stat-item">
+            <div class="my-stat-num">{{ myProfile.likes || 0 }}</div>
+            <div class="my-stat-label">获赞</div>
+          </div>
+          <div class="my-stat-item">
+            <div class="my-stat-num">{{ myPostsCount }}</div>
+            <div class="my-stat-label">帖子</div>
+          </div>
+        </div>
+      </div>
+      <div class="my-grid">
+        <button class="my-grid-btn" @click="openCollection('collect')">
+          <i data-lucide="star"></i><span>收藏</span>
+        </button>
+        <button class="my-grid-btn" @click="openCollection('posts')">
+          <i data-lucide="file-text"></i><span>稿件</span>
+        </button>
+        <button class="my-grid-btn" @click="openSettings">
+          <i data-lucide="settings"></i><span>设置</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 帖子详情 ===== -->
+  <transition name="slide">
+    <div class="post-detail-wrap" v-if="currentPost">
+      <div class="post-detail-header">
+        <button class="post-detail-back" @click="currentPost=null"><i data-lucide="arrow-left"></i></button>
+        <div class="post-detail-header-title">{{ currentPost.title }}</div>
+        <button class="forum-topbar-btn" @click="openPostMenu(currentPost)"><i data-lucide="more-horizontal"></i></button>
+      </div>
+      <div class="post-detail-scroll" ref="postScrollRef">
+        <div class="post-main">
+          <div class="post-main-author" @click="openPM(currentPost.author, currentPost)">{{ currentPost.author }}</div>
+          <div class="post-main-time">{{ formatTime(currentPost.time) }}</div>
+          <div class="post-main-title">{{ currentPost.title }}</div>
+          <div class="post-main-content">{{ currentPost.content }}</div>
+          <div class="post-main-footer">
+            <button class="post-action-btn" :class="{liked: currentPost.likedByMe}" @click="likePost(currentPost)">
+              <i data-lucide="heart"></i>{{ currentPost.likes || 0 }}
+            </button>
+            <button class="post-action-btn" :class="{collected: isCollected(currentPost.id,'post')}" @click="toggleCollect(currentPost,'post')">
+              <i data-lucide="star"></i>{{ isCollected(currentPost.id,'post') ? '已收藏' : '收藏' }}
+            </button>
+          </div>
+        </div>
+        <div class="reply-section">
+          <div class="reply-section-title" style="display:flex;align-items:center;">
+            <span style="flex:1;">回复 {{ currentPost.replies ? currentPost.replies.length : 0 }}</span>
+            <button @click="generateReplies" :disabled="generatingReplies"
+              style="display:flex;align-items:center;gap:4px;background:#111;color:#fff;border:none;border-radius:20px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;">
+              <i data-lucide="sparkles" style="width:12px;height:12px;"></i>
+              {{ generatingReplies ? '生成中...' : '生成评论' }}
+            </button>
+          </div>
+          <div v-if="!currentPost.replies || currentPost.replies.length===0" class="page-empty" style="padding:30px 0;">
+            <span>暂无回复，来说第一句</span>
+          </div>
+          <div class="reply-item" v-for="(reply, idx) in (currentPost.replies||[])" :key="reply.id" :data-reply-id="reply.id">
+            <div class="reply-item-header">
+              <span class="reply-floor">{{ idx+1 }}楼</span>
+              <span class="reply-op-badge" v-if="reply.isOp">楼主</span>
+              <span style="font-size:11px;color:#bbb;margin-left:auto;">{{ formatTime(reply.time) }}</span>
+            </div>
+            <div class="reply-quote" v-if="reply.quoteId" @click="scrollToReply(reply.quoteId)">
+              <span>↩ </span>{{ getQuoteContent(reply.quoteId) }}
+            </div>
+            <div class="reply-item-content">{{ reply.content }}</div>
+            <div class="reply-item-footer">
+              <button class="reply-like-btn" :class="{liked: reply.likedByMe}" @click="likeReply(reply)">
+                <i data-lucide="heart"></i>{{ reply.likes || 0 }}
+              </button>
+              <button class="reply-quote-btn" @click="setQuoteReply(reply, idx)">引用</button>
+              <button class="reply-more-btn" @click="openReplyMenu(reply)"><i data-lucide="more-horizontal"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="reply-input-bar">
+        <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+          <div class="reply-quote-preview" v-if="quotingReply">
+            <span>引用：{{ quotingReply.content.slice(0,20) }}{{ quotingReply.content.length>20?'...':'' }}</span>
+            <button class="reply-quote-cancel" @click="quotingReply=null"><i data-lucide="x" style="width:12px;height:12px;"></i></button>
+          </div>
+          <div class="reply-input-wrap">
+            <textarea class="reply-textarea" v-model="replyText"
+              :placeholder="quotingReply ? '回复 '+quotingReply.floor+'楼...' : '说点什么...'"
+              rows="1" @input="autoResizeReply" ref="replyTextareaRef"></textarea>
+          </div>
+        </div>
+        <button class="reply-send-btn" @click="sendReply"><i data-lucide="send"></i></button>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 私聊页 ===== -->
+  <transition name="slide">
+    <div class="pm-wrap" v-if="currentConv">
+      <div class="pm-header">
+        <button class="pm-back" @click="currentConv=null"><i data-lucide="arrow-left"></i></button>
+        <div class="pm-name">{{ currentConv.name }}</div>
+      </div>
+      <div class="pm-body" ref="pmBodyRef">
+        <div class="pm-msg-row" v-for="msg in (currentConv.messages||[])" :key="msg.id"
+          :class="msg.role==='user'?'me':''">
+          <div class="pm-bubble" :class="msg.role==='user'?'me':'them'">
+            <div class="pm-loading-bubble" v-if="msg.loading"><span></span><span></span><span></span></div>
+            <span v-else>{{ msg.content }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="pm-input-bar">
+        <button class="pm-send-btn" style="background:#f2f2f7;color:#555;" @click="generatePMReply" :disabled="pmGenerating">
+          <i data-lucide="sparkles"></i>
+        </button>
+        <div class="pm-input-wrap">
+          <textarea class="pm-textarea" v-model="pmText" placeholder="发消息..."
+            rows="1" @keydown.enter.exact.prevent="sendPM"
+            @input="autoResizePM" ref="pmTextareaRef"></textarea>
+        </div>
+        <button class="pm-send-btn" @click="sendPM"><i data-lucide="send"></i></button>
+      </div>
+    </div>
+  </transition>
+  <!-- ===== 热搜详情页 ===== -->
+  <transition name="slide">
+    <div class="hotdetail-wrap" v-if="hotDetailShow">
+      <div class="hotdetail-header">
+        <button class="back-btn" @click="hotDetailShow=false"><i data-lucide="arrow-left"></i></button>
+        <div class="hotdetail-title">{{ hotDetailItem ? hotDetailItem.title : '' }}</div>
+        <a v-if="hotDetailItem && hotDetailItem.url" :href="hotDetailItem.url" target="_blank"
+          style="width:34px;height:34px;border-radius:50%;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#555;text-decoration:none;">
+          <i data-lucide="external-link" style="width:18px;height:18px;"></i>
+        </a>
+      </div>
+      <div class="hotdetail-scroll">
+        <!-- 加载中 -->
+        <div class="gen-loading" v-if="hotDetailLoading">
+          <span></span><span></span><span></span>
+        </div>
+        <template v-if="!hotDetailLoading && hotDetailData">
+          <!-- 话题简介 -->
+          <div class="hotdetail-intro">
+            <div class="hotdetail-intro-label">话题简介</div>
+            <div class="hotdetail-intro-text">{{ hotDetailData.intro }}</div>
+          </div>
+          <!-- 模拟讨论 -->
+          <div class="hotdetail-discuss" v-if="hotDetailData.comments && hotDetailData.comments.length">
+            <div class="hotdetail-discuss-label">模拟讨论 · {{ hotDetailData.comments.length }}条</div>
+            <div class="hotdetail-comment" v-for="(c, i) in hotDetailData.comments" :key="i">
+              <div class="hotdetail-comment-author">{{ c.author }}</div>
+              <div class="hotdetail-comment-content">{{ c.content }}</div>
+              <div class="hotdetail-comment-likes">{{ c.likes || 0 }} 赞</div>
+            </div>
+          </div>
+          <!-- 操作按钮 -->
+          <div class="hotdetail-actions">
+            <button class="hotdetail-action-btn primary" @click="postHotToForum">
+              <i data-lucide="plus"></i> 发帖到论坛
+            </button>
+            <button class="hotdetail-action-btn secondary" @click="refreshHotDetail">
+              <i data-lucide="refresh-cw"></i> 重新生成
+            </button>
+          </div>
+        </template>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 收藏/稿件页 ===== -->
+  <transition name="slide">
+    <div class="collection-wrap" v-if="collectionShow">
+      <div class="collection-header">
+        <button class="back-btn" @click="collectionShow=false"><i data-lucide="arrow-left"></i></button>
+        <div style="font-size:16px;font-weight:700;color:#111;flex:1;">{{ collectionType==='collect'?'收藏':'稿件' }}</div>
+      </div>
+      <div class="collection-scroll">
+        <div class="collection-tabs" v-if="collectionType==='collect'">
+          <div class="collection-tab" :class="{active: collectTab==='post'}" @click="collectTab='post'">帖子</div>
+          <div class="collection-tab" :class="{active: collectTab==='reply'}" @click="collectTab='reply'">评论</div>
+        </div>
+        <div class="collection-empty" v-if="collectionItems.length===0">暂无内容</div>
+        <div class="collection-item" v-for="item in collectionItems" :key="item.id" @click="openCollectionItem(item)">
+          <div class="collection-item-title">{{ item.title || item.content.slice(0,30) }}</div>
+          <div class="collection-item-desc">{{ item.content }}</div>
+          <div class="collection-item-meta">{{ item.cat || '' }} · {{ formatTime(item.time || item.collectedAt) }}</div>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 设置页 ===== -->
+  <transition name="slide">
+    <div class="settings-wrap" v-if="settingsShow">
+      <div class="settings-header">
+        <button class="back-btn" @click="settingsShow=false"><i data-lucide="arrow-left"></i></button>
+        <div style="font-size:16px;font-weight:700;color:#111;flex:1;">设置</div>
+        <button class="settings-save-btn" @click="saveSettings">保存</button>
+      </div>
+      <div class="settings-scroll">
+
+        <!-- 论坛专用 API -->
+        <div class="settings-section">
+          <div class="settings-section-title">论坛专用 API（不填则使用全局 API）</div>
+          <div class="settings-row"><span class="settings-label">API 网址</span></div>
+          <input class="settings-input" v-model="settingsForm.forumApi.url" placeholder="https://api.example.com/v1" />
+          <div class="settings-row" style="margin-top:8px;"><span class="settings-label">API 密钥</span></div>
+          <input class="settings-input" type="password" v-model="settingsForm.forumApi.key" placeholder="sk-..." />
+          <div class="settings-row" style="margin-top:8px;"><span class="settings-label">模型</span></div>
+          <div style="display:flex;gap:8px;">
+            <input class="settings-input" v-model="settingsForm.forumApi.model" placeholder="模型名称..." style="flex:1;" />
+            <button class="settings-save-btn" @click="fetchForumModels" style="white-space:nowrap;">获取</button>
+          </div>
+          <div v-if="forumModelList.length" style="display:flex;flex-direction:column;gap:4px;margin-top:6px;max-height:160px;overflow-y:auto;border:1.5px solid #e5e5ea;border-radius:10px;">
+            <div v-for="m in forumModelList" :key="m"
+              @click="settingsForm.forumApi.model=m; forumModelList=[]"
+              style="padding:8px 12px;font-size:13px;color:#333;cursor:pointer;border-bottom:1px solid #f0f0f0;">
+              {{ m }}
+            </div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:6px;">设置后，论坛生成帖子、AI搜索、次元热搜、私聊均优先使用此API</div>
+        </div>
+
+        <!-- 次元热搜提示词 -->
+        <div class="settings-section">
+          <div class="settings-section-title">次元热搜提示词</div>
+          <textarea class="settings-textarea" v-model="settingsForm.dimHotPrompt" placeholder="次元热搜生成提示词..."></textarea>
+          <div class="settings-row" style="margin-top:6px;">
+            <span class="settings-label" style="font-size:12px;">注入世界书</span>
+          </div>
+          <div v-if="availableWorldBooks.length">
+            <div v-for="wbcat in ['', ...availableWorldBookCats]" :key="wbcat" style="margin-bottom:4px;">
+              <div style="font-size:10px;color:#bbb;margin-bottom:2px;">{{ wbcat || '无分类' }}</div>
+              <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                <div v-for="book in wbCatBooks(wbcat)" :key="book.id"
+                  class="settings-npc-chip"
+                  :class="{selected: (settingsForm.dimHotWorldBooks||[]).includes(book.id)}"
+                  @click="toggleDimHotWorldBook(book.id)">
+                  {{ book.name }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else style="font-size:11px;color:#bbb;">世界书馆暂无世界书</div>
+        </div>
+
+        <!-- 分类提示词 -->
+        <div class="settings-section">
+          <div class="settings-section-title">分类生成提示词 & 绑定角色</div>
+          <div class="settings-cat-list">
+            <div class="settings-cat-item" v-for="cat in settingsForm.categories" :key="cat.name">
+              <div class="settings-cat-header" @click="toggleCatExpand(cat.name)">
+                <span class="settings-cat-name">{{ cat.name }}</span>
+                <i :data-lucide="expandedCats.includes(cat.name)?'chevron-up':'chevron-down'" style="width:14px;height:14px;color:#aaa;"></i>
+              </div>
+              <div class="settings-cat-body" v-if="expandedCats.includes(cat.name)">
+                <div class="settings-row">
+                  <span class="settings-label" style="font-size:12px;">生成提示词</span>
+                </div>
+                <textarea class="settings-textarea" v-model="cat.prompt"
+                  :placeholder="'描述「'+cat.name+'」板块的AI生成风格...'"></textarea>
+                <div class="settings-row" style="margin-top:6px;">
+                  <span class="settings-label" style="font-size:12px;">评论生成提示词</span>
+                </div>
+                <textarea class="settings-textarea" v-model="cat.replyPrompt"
+                  :placeholder="'描述「'+cat.name+'」板块下评论的风格...'"></textarea>
+
+                  <div class="settings-row" style="margin-top:6px;">
+                  <span class="settings-label" style="font-size:12px;">绑定角色/NPC</span>
+                </div>
+                <div class="settings-npc-chips">
+                  <div class="settings-npc-chip"
+                    v-for="char in availableChars" :key="char.id"
+                    :class="{selected: cat.npcIds && cat.npcIds.includes(char.id)}"
+                    @click="toggleCatNpc(cat, char.id)">
+                    {{ char.name }}
+                  </div>
+                  <div class="settings-npc-chip" style="opacity:0.5;cursor:default;font-size:10px;">+ 随机NPC自动参与</div>
+                </div>
+                <div class="settings-row" style="margin-top:6px;">
+                  <span class="settings-label" style="font-size:12px;">注入世界书</span>
+                </div>
+                <div v-if="availableWorldBooks.length">
+                  <div v-for="wbcat in ['', ...availableWorldBookCats]" :key="wbcat" style="margin-bottom:4px;">
+                    <div style="font-size:10px;color:#bbb;margin-bottom:2px;">{{ wbcat || '无分类' }}</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                      <div v-for="book in wbCatBooks(wbcat)" :key="book.id"
+                        class="settings-npc-chip"
+                        :class="{selected: cat.worldBookIds && cat.worldBookIds.includes(book.id)}"
+                        @click="toggleCatWorldBook(cat, book.id)">
+                        {{ book.name }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div v-else style="font-size:11px;color:#bbb;">世界书馆暂无世界书</div>
+
+              </div>
+            </div>
+          </div>
+          <button style="margin-top:8px;padding:8px 14px;border-radius:10px;border:1.5px dashed #ccc;background:transparent;font-size:12px;color:#aaa;cursor:pointer;width:100%;" @click="addCustomCategory">
+            + 添加自定义分类
+          </button>
+        </div>
+
+        <!-- 固定NPC -->
+        <div class="settings-section">
+          <div class="settings-section-title">固定帖子 NPC</div>
+          <div style="display:flex;flex-direction:column;gap:8px;" v-if="settingsForm.fixedNpcs && settingsForm.fixedNpcs.length">
+            <div v-for="(npc, i) in settingsForm.fixedNpcs" :key="i" style="display:flex;align-items:center;gap:8px;">
+              <input class="settings-input" v-model="npc.name" placeholder="NPC名字..." style="flex:1;" />
+              <input class="settings-input" v-model="npc.persona" placeholder="简短人设..." style="flex:2;" />
+              <button @click="settingsForm.fixedNpcs.splice(i,1)"
+                style="background:transparent;border:none;cursor:pointer;color:#e53e3e;flex-shrink:0;">
+                <i data-lucide="trash-2" style="width:16px;height:16px;"></i>
+              </button>
+            </div>
+          </div>
+          <button style="margin-top:6px;padding:8px 14px;border-radius:10px;border:1.5px dashed #ccc;background:transparent;font-size:12px;color:#aaa;cursor:pointer;width:100%;" @click="settingsForm.fixedNpcs.push({name:'',persona:''})">
+            + 添加固定NPC
+          </button>
+        </div>
+        <!-- 热搜平台排序 -->
+        <div class="settings-section">
+          <div class="settings-section-title">热搜平台排序</div>
+          <div style="font-size:11px;color:#aaa;margin-bottom:8px;">拖动排序暂不支持，可通过上下移动按钮调整顺序</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <div v-for="(p, i) in settingsForm.hotPlatformOrder.length ? settingsForm.hotPlatformOrder.map(k => hotPlatforms.find(x=>x.key===k)).filter(Boolean) : hotPlatforms"
+              :key="p.key"
+              style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#f9f9f9;border-radius:8px;">
+              <span style="font-size:13px;flex:1;">{{ p.region }} {{ p.label }}</span>
+              <button @click="movePlatform(p.key, -1)" style="background:transparent;border:none;cursor:pointer;color:#888;padding:2px 6px;">↑</button>
+              <button @click="movePlatform(p.key, 1)" style="background:transparent;border:none;cursor:pointer;color:#888;padding:2px 6px;">↓</button>
+            </div>
+          </div>
+          <button style="margin-top:6px;padding:6px 12px;border-radius:8px;border:1px solid #e5e5ea;background:#f9f9f9;font-size:12px;color:#aaa;cursor:pointer;" @click="resetPlatformOrder">重置默认顺序</button>
+        </div>
+
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 发帖弹窗 ===== -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="postFormShow" @click.self="postFormShow=false">
+      <div class="modal-box">
+        <div class="modal-title">{{ editingPost ? '编辑帖子' : '发帖' }}</div>
+        <div class="modal-item">
+          <label>标题</label>
+          <input class="modal-input" v-model="postForm.title" placeholder="帖子标题..." />
+        </div>
+        <div class="modal-item">
+          <label>正文</label>
+          <textarea class="modal-textarea" v-model="postForm.content" placeholder="帖子内容..."></textarea>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="postFormShow=false">取消</button>
+          <button class="modal-btn confirm" @click="submitPost">{{ editingPost ? '保存' : '发布' }}</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 操作菜单（帖子） ===== -->
+  <transition name="sheet">
+    <div class="action-sheet-mask" v-if="postMenuShow" @click.self="postMenuShow=false">
+      <div class="action-sheet">
+        <button class="action-sheet-btn" @click="collectFromMenu">收藏</button>
+        <button class="action-sheet-btn" @click="editFromMenu">编辑</button>
+        <button class="action-sheet-btn danger" @click="deleteFromMenu">删除</button>
+        <button class="action-sheet-btn cancel" @click="postMenuShow=false">取消</button>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 操作菜单（评论） ===== -->
+  <transition name="sheet">
+    <div class="action-sheet-mask" v-if="replyMenuShow" @click.self="replyMenuShow=false">
+      <div class="action-sheet">
+        <button class="action-sheet-btn" @click="collectReplyFromMenu">收藏</button>
+        <button class="action-sheet-btn" @click="editReplyFromMenu">编辑</button>
+        <button class="action-sheet-btn danger" @click="deleteReplyFromMenu">删除</button>
+        <button class="action-sheet-btn cancel" @click="replyMenuShow=false">取消</button>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 编辑评论弹窗 ===== -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="editReplyShow" @click.self="editReplyShow=false">
+      <div class="modal-box">
+        <div class="modal-title">编辑评论</div>
+        <div class="modal-item">
+          <textarea class="modal-textarea" v-model="editReplyContent"></textarea>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="editReplyShow=false">取消</button>
+          <button class="modal-btn confirm" @click="confirmEditReply">保存</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 添加分类弹窗 ===== -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="addCatShow" @click.self="addCatShow=false">
+      <div class="modal-box">
+        <div class="modal-title">添加分类</div>
+        <div class="modal-item">
+          <label>分类名称</label>
+          <input class="modal-input" v-model="newCatName" placeholder="例：二次元、三次元..." @keyup.enter="confirmAddCategory" />
+        </div>
+        <div class="modal-item">
+          <label>生成提示词</label>
+          <textarea class="modal-textarea" v-model="newCatPrompt" placeholder="描述此分类的发帖风格..."></textarea>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="addCatShow=false">取消</button>
+          <button class="modal-btn confirm" @click="confirmAddCategory">添加</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="forum.js"></script>
+</body>
+</html>

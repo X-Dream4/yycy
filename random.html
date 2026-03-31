@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>次元发现</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="random.css" />
+</head>
+<body>
+<div class="page-loading-mask" id="loadingMask">
+  <div class="loading-tangle">
+    <svg viewBox="0 0 80 80">
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="30" ry="18"/>
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="18" ry="30"/>
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="35" ry="10"/>
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="10" ry="35"/>
+    </svg>
+  </div>
+  <div class="loading-text">正在连接次元…</div>
+</div>
+
+<div id="random-app" v-cloak>
+
+  <!-- 顶部栏 -->
+  <div class="random-topbar">
+    <button class="topbar-icon-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+    <div class="random-topbar-title">次元发现</div>
+        <button class="topbar-icon-btn" @click="openSettings"><i data-lucide="settings"></i></button>
+  </div>
+
+  <!-- Tab 切换 -->
+  <div class="random-tabs">
+    <div class="random-tab" :class="{active: mainTab==='discover'}" @click="mainTab='discover'">发现</div>
+    <div class="random-tab" :class="{active: mainTab==='corridor'}" @click="mainTab='corridor'">走廊</div>
+  </div>
+
+  <!-- 主内容区 -->
+  <div class="random-body">
+
+    <!-- ===== 发现 Tab ===== -->
+    <div class="discover-area" v-show="mainTab==='discover'">
+
+      <!-- 卡片堆叠 -->
+      <div class="card-stack" v-if="cardPool.length > 0 || cardLoading">
+
+        <div class="char-card-behind" v-if="cardPool.length > 1"></div>
+
+        <!-- 加载中 -->
+        <div class="card-loading" v-if="cardLoading">
+          <div class="grid-loading"><span></span><span></span><span></span></div>
+          <div class="card-loading-text">正在连接次元信号…</div>
+        </div>
+
+        <!-- 翻转卡片容器 -->
+        <div class="card-flip-wrapper" v-if="!cardLoading && currentCard">
+
+          <!-- 无图模式 -->
+          <div v-if="settings.avatarMode === 'none'"
+            class="card-noimg"
+            :class="{'fly-left': flyLeft, 'fly-right': flyRight, 'is-dragging': isDragging}"
+            :style="[getNoImgStyle(currentCard), cardDragStyle]"
+            @mousedown="onCardMouseDown"
+            @touchstart="onCardTouchStart"
+            @touchmove="onCardTouchMove"
+            @touchend="onCardTouchEnd">
+            <div class="card-noimg-name">{{ currentCard.name }}</div>
+            <div class="card-noimg-type">{{ currentCard.type || '未知次元' }}</div>
+            <div class="card-noimg-divider"></div>
+            <div class="card-noimg-label">世界观</div>
+            <div class="card-noimg-text">{{ currentCard.world }}</div>
+            <div class="card-noimg-label">人设</div>
+            <div class="card-noimg-text">{{ currentCard.persona }}</div>
+            <div class="card-noimg-tags" v-if="currentCard.tags && currentCard.tags.length">
+              <span class="card-noimg-tag" v-for="tag in currentCard.tags" :key="tag">{{ tag }}</span>
+            </div>
+            <div class="card-overlay-pass" :class="{show: dragDir==='left'}"><span class="overlay-label">跳过</span></div>
+            <div class="card-overlay-like" :class="{show: dragDir==='right'}"><span class="overlay-label">连接</span></div>
+          </div>
+
+          <!-- 有图模式（可翻转）-->
+          <div v-else
+            class="char-card"
+            :class="{'flipped': cardFlipped, 'fly-left': flyLeft, 'fly-right': flyRight, 'is-dragging': isDragging}"
+            :style="cardDragStyle"
+            @click="onCardClick"
+            @mousedown="onCardMouseDown"
+            @touchstart="onCardTouchStart"
+            @touchmove="onCardTouchMove"
+            @touchend="onCardTouchEnd">
+
+            <!-- 正面 -->
+            <div class="card-front">
+              <div class="card-bg" :style="getCardBgStyle(currentCard)">
+                <div class="card-bg-gradient"></div>
+                <div class="card-type-badge" v-if="currentCard.type && settings.showTypeBadge">{{ currentCard.type }}</div>
+                <div class="card-source-badge" v-if="currentCard.source==='ai'">AI 生成</div>
+                <div class="card-flip-hint"><i data-lucide="refresh-cw"></i> 点击翻面</div>
+              </div>
+              <div class="card-info">
+                <div class="card-name">{{ currentCard.name }}</div>
+                <div class="card-world" v-if="currentCard.world">{{ currentCard.world }}</div>
+                <div class="card-tags" v-if="currentCard.tags && currentCard.tags.length && settings.showTags">
+                  <span class="card-tag" v-for="tag in currentCard.tags" :key="tag">{{ tag }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 背面 -->
+            <div class="card-back">
+              <div class="card-back-inner">
+                <div>
+                  <div class="card-back-name">{{ currentCard.name }}</div>
+                  <div class="card-back-type">{{ currentCard.type || '未知次元' }}</div>
+                </div>
+                <div class="card-back-tags" v-if="currentCard.tags && currentCard.tags.length">
+                  <span class="card-back-tag" v-for="tag in currentCard.tags" :key="tag">{{ tag }}</span>
+                </div>
+                <div v-if="currentCard.world">
+                  <div class="card-back-section-title">世界观</div>
+                  <div class="card-back-section-content">{{ currentCard.world }}</div>
+                </div>
+                <div v-if="currentCard.persona">
+                  <div class="card-back-section-title">人设</div>
+                  <div class="card-back-section-content">{{ currentCard.persona }}</div>
+                </div>
+                <div v-if="currentCard.imagePrompt">
+                  <div class="card-back-section-title">生图提示词</div>
+                  <div class="card-back-section-content" style="font-size:11px;font-family:monospace;">{{ currentCard.imagePrompt }}</div>
+                </div>
+              </div>
+              <div class="card-back-flip-hint">点击翻回正面</div>
+            </div>
+
+            <!-- 滑动遮罩（覆盖整个翻转卡片）-->
+            <div class="card-overlay-pass" :class="{show: dragDir==='left'}"><span class="overlay-label">跳过</span></div>
+            <div class="card-overlay-like" :class="{show: dragDir==='right'}"><span class="overlay-label">连接</span></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 空状态 -->
+      <div class="card-stack-empty" v-if="!cardLoading && cardPool.length === 0">
+        <i data-lucide="compass" style="width:48px;height:48px;color:#ccc;"></i>
+        <div class="card-stack-empty-text">已探索所有次元<br/>点击下方按钮生成更多角色</div>
+        <button class="card-stack-empty-btn" @click="generateCards">随机生成</button>
+      </div>
+
+      <!-- 操作栏 -->
+      <div class="action-bar">
+        <button class="action-btn skip" @click="doSkip" :disabled="cardLoading || !currentCard"><i data-lucide="x"></i></button>
+        <button class="action-btn main" @click="generateCards" :disabled="cardLoading"><i data-lucide="zap"></i></button>
+        <button class="action-btn like" @click="doConnect" :disabled="cardLoading || !currentCard"><i data-lucide="heart"></i></button>
+      </div>
+
+    </div>
+
+    <!-- ===== 走廊 Tab ===== -->
+    <div class="corridor-area" v-show="mainTab==='corridor'">
+
+      <!-- 筛选栏 -->
+      <div class="filter-bar">
+        <div class="filter-chip" :class="{active: activeFilter==='全部'}" @click="activeFilter='全部'">全部</div>
+        <div class="filter-chip" v-for="t in typeOptions" :key="t.name" :class="{active: activeFilter===t.name}" @click="activeFilter=t.name">{{ t.name }}</div>
+      </div>
+
+      <!-- 精选次元 -->
+      <div class="featured-section" v-if="featuredChars.length">
+        <div class="section-header">
+          <div class="section-title">精选次元</div>
+          <div class="section-more" @click="activeFilter='全部'">查看更多</div>
+        </div>
+        <div class="featured-scroll">
+          <div class="featured-card" v-for="c in featuredChars" :key="c.id" @click="openDetail(c)">
+            <div class="featured-card-img" :style="settings.avatarMode==='none' ? getNoImgStyle(c) : getCardBgStyle(c)"></div>
+            <div class="featured-card-info">
+              <div class="featured-card-name">{{ c.name }}</div>
+              <div class="featured-card-type">{{ c.type || '未知次元' }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 全部次元 -->
+      <div class="grid-section" style="margin-top:14px;">
+        <div class="grid-section-header">
+          <div class="section-title">全部次元</div>
+          <button class="grid-generate-btn" @click="generateCards" :disabled="gridLoading">
+            <i data-lucide="zap"></i>
+            {{ gridLoading ? '生成中…' : 'AI 生成' }}
+          </button>
+        </div>
+
+        <div class="grid-loading" v-if="gridLoading">
+          <span></span><span></span><span></span>
+        </div>
+
+        <div class="char-grid" v-if="filteredGridChars.length">
+          <div class="grid-card" v-for="c in filteredGridChars" :key="c.id" @click="openDetail(c)">
+            <div class="grid-card-img" :style="settings.avatarMode==='none' ? getNoImgStyle(c) : getCardBgStyle(c)"></div>
+            <div class="grid-card-body">
+              <div class="grid-card-name">{{ c.name }}</div>
+              <div class="grid-card-world">{{ c.world }}</div>
+              <div class="grid-card-type">{{ c.type || '未知次元' }}</div>
+            </div>
+            <div class="grid-card-footer">
+              <button class="grid-card-btn" :class="isConnected(c.id) ? 'connected' : 'connect'" @click.stop="isConnected(c.id) ? null : connectChar(c)">
+                {{ isConnected(c.id) ? '已连接' : '建立连接' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-empty" v-if="!gridLoading && filteredGridChars.length === 0">
+          <i data-lucide="inbox" style="width:36px;height:36px;color:#ddd;"></i>
+          <span>暂无角色，点击 AI 生成</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== 底部详情抽屉 ===== -->
+  <transition name="drawer">
+    <div class="detail-drawer-mask" v-if="detailChar" @click.self="detailChar=null">
+      <div class="detail-drawer">
+        <div class="detail-drawer-handle"></div>
+        <div class="detail-drawer-header">
+          <div class="detail-drawer-avatar" :style="settings.avatarMode==='none' ? getNoImgStyle(detailChar) : getCardBgStyle(detailChar)">
+            <span v-if="!detailChar.avatar && settings.avatarMode!=='none'">{{ detailChar.name?.[0] }}</span>
+          </div>
+          <div>
+            <div class="detail-drawer-name">{{ detailChar.name }}</div>
+            <div class="detail-drawer-type">{{ detailChar.type || '未知次元' }}</div>
+          </div>
+        </div>
+        <div class="detail-drawer-tags" v-if="detailChar.tags && detailChar.tags.length">
+          <span class="detail-drawer-tag" v-for="tag in detailChar.tags" :key="tag">{{ tag }}</span>
+        </div>
+        <div v-if="detailChar.world">
+          <div class="detail-section-title">世界观</div>
+          <div class="detail-section-content">{{ detailChar.world }}</div>
+        </div>
+        <div v-if="detailChar.persona">
+          <div class="detail-section-title">人设</div>
+          <div class="detail-section-content">{{ detailChar.persona }}</div>
+        </div>
+        <div v-if="detailChar.imagePrompt">
+          <div class="detail-section-title">生图提示词</div>
+          <div class="detail-section-content" style="font-size:11px;font-family:monospace;word-break:break-all;">{{ detailChar.imagePrompt }}</div>
+        </div>
+        <!-- 头像设置（非无图模式显示）-->
+        <div v-if="settings.avatarMode !== 'none'">
+          <div class="detail-section-title">手动设置头像</div>
+          <div class="detail-avatar-row">
+            <input class="detail-avatar-input" v-model="detailAvatarUrl" placeholder="粘贴头像图片 URL…" />
+            <button class="detail-avatar-btn" @click="applyDetailAvatar">确认</button>
+            <button class="detail-regen-btn" @click="regenAvatar(detailChar)" v-if="settings.avatarMode !== 'manual'">重新生成</button>
+          </div>
+        </div>
+        <div class="detail-drawer-btns">
+          <button class="detail-drawer-btn cancel" @click="detailChar=null">关闭</button>
+          <button class="detail-drawer-btn" style="background:#fff0f0;color:#e53e3e;" @click="deleteChar(detailChar)">删除</button>
+          <button class="detail-drawer-btn" :class="isConnected(detailChar.id) ? 'already' : 'confirm'" @click="isConnected(detailChar.id) ? null : connectChar(detailChar)">
+            {{ isConnected(detailChar.id) ? '已连接' : '建立连接' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 设置面板 ===== -->
+  <transition name="slide">
+    <div class="settings-panel" v-if="settingsShow">
+      <div class="settings-panel-header">
+        <button class="topbar-icon-btn" @click="settingsShow=false"><i data-lucide="arrow-left"></i></button>
+        <div class="settings-panel-title">随机链接设置</div>
+        <div style="width:36px;"></div>
+      </div>
+
+      <div class="settings-panel-scroll">
+
+        <!-- 头像生成方式 -->
+        <div class="s-card">
+          <div class="s-card-title">头像 / 卡片背景</div>
+          <div class="s-hint">选择角色卡的头像或背景显示方式</div>
+
+          <!-- 无图模式 -->
+          <div class="s-avatar-mode-card">
+            <div class="s-avatar-mode-header" :class="{'active-mode': settingsForm.avatarMode==='none'}" @click="settingsForm.avatarMode='none'">
+              <div>
+                <div class="s-avatar-mode-name">无图模式</div>
+                <div class="s-avatar-mode-desc">纯色背景显示全部角色信息，不生成头像</div>
+              </div>
+              <div class="s-radio" :class="{checked: settingsForm.avatarMode==='none'}"></div>
+            </div>
+          </div>
+
+          <!-- 渐变色 -->
+          <div class="s-avatar-mode-card">
+            <div class="s-avatar-mode-header" :class="{'active-mode': settingsForm.avatarMode==='gradient'}" @click="settingsForm.avatarMode='gradient'">
+              <div>
+                <div class="s-avatar-mode-name">渐变色占位（默认）</div>
+                <div class="s-avatar-mode-desc">随机渐变色背景，稳定好看，无需任何配置</div>
+              </div>
+              <div class="s-radio" :class="{checked: settingsForm.avatarMode==='gradient'}"></div>
+            </div>
+          </div>
+
+          <!-- DiceBear -->
+          <div class="s-avatar-mode-card">
+            <div class="s-avatar-mode-header" :class="{'active-mode': settingsForm.avatarMode==='dicebear'}" @click="settingsForm.avatarMode='dicebear'">
+              <div>
+                <div class="s-avatar-mode-name">DiceBear 插画风</div>
+                <div class="s-avatar-mode-desc">免费稳定的插画风格头像，无需 Key</div>
+              </div>
+              <div class="s-radio" :class="{checked: settingsForm.avatarMode==='dicebear'}"></div>
+            </div>
+            <div class="s-avatar-mode-body" v-if="settingsForm.avatarMode==='dicebear'">
+              <div class="s-item">
+                <label>风格</label>
+                <div class="s-chips">
+                  <div class="s-chip" v-for="s in dicebearStyles" :key="s.value" :class="{active: settingsForm.dicebearStyle===s.value}" @click="settingsForm.dicebearStyle=s.value">{{ s.label }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pollinations -->
+          <div class="s-avatar-mode-card">
+            <div class="s-avatar-mode-header" :class="{'active-mode': settingsForm.avatarMode==='pollinations'}" @click="settingsForm.avatarMode='pollinations'">
+              <div>
+                <div class="s-avatar-mode-name">Pollinations.ai</div>
+                <div class="s-avatar-mode-desc">免费 AI 生图，效果不稳定，可能较慢</div>
+              </div>
+              <div class="s-radio" :class="{checked: settingsForm.avatarMode==='pollinations'}"></div>
+            </div>
+            <div class="s-avatar-mode-body" v-if="settingsForm.avatarMode==='pollinations'">
+              <div class="s-item">
+                <label>生图提示词模板</label>
+                <textarea class="s-textarea" v-model="settingsForm.pollinationsPromptTemplate" placeholder="例：portrait of {{name}}, {{type}} style, anime, soft lighting, detailed face&#10;&#10;可用占位符：{{name}} 角色名、{{type}} 次元类型、{{tags}} 性格标签、{{imagePrompt}} AI生成的专属提示词"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- 自定义生图 API -->
+          <div class="s-avatar-mode-card">
+            <div class="s-avatar-mode-header" :class="{'active-mode': settingsForm.avatarMode==='custom'}" @click="settingsForm.avatarMode='custom'">
+              <div>
+                <div class="s-avatar-mode-name">自定义生图 API</div>
+                <div class="s-avatar-mode-desc">填入自己的图像生成 API 地址和 Key</div>
+              </div>
+              <div class="s-radio" :class="{checked: settingsForm.avatarMode==='custom'}"></div>
+            </div>
+            <div class="s-avatar-mode-body" v-if="settingsForm.avatarMode==='custom'">
+              <div class="s-item">
+                <label>API 地址</label>
+                <input class="s-input" v-model="settingsForm.customImgUrl" placeholder="https://api.example.com/v1/images/generations" />
+              </div>
+              <div class="s-item">
+                <label>API Key</label>
+                <input class="s-input" type="password" v-model="settingsForm.customImgKey" placeholder="sk-..." />
+              </div>
+              <div class="s-item">
+                <label>模型名称</label>
+                <div style="display:flex;gap:8px;">
+                  <div style="position:relative;flex:1;">
+                    <input class="s-input" v-model="settingsForm.customImgModel" placeholder="点击获取或手动输入" @click="showImgModelDrop=true" />
+                    <div v-if="showImgModelDrop && imgModelList.length" style="position:absolute;top:100%;left:0;right:0;background:#fff;border:1.5px solid #e5e5ea;border-radius:10px;overflow-y:auto;max-height:180px;z-index:50;box-shadow:0 4px 16px rgba(0,0,0,0.10);margin-top:4px;">
+                      <div v-for="m in imgModelList" :key="m" @click="settingsForm.customImgModel=m;showImgModelDrop=false" style="padding:9px 12px;font-size:13px;color:#333;cursor:pointer;border-bottom:1px solid #f0f0f0;">{{ m }}</div>
+                    </div>
+                  </div>
+                  <button class="s-danger-btn" style="background:#111;color:#fff;border-color:#111;padding:8px 14px;font-size:12px;white-space:nowrap;" @click="fetchImgModels">获取</button>
+                </div>
+              </div>
+              <div class="s-item">
+                <label>生图提示词模板</label>
+                <textarea class="s-textarea" v-model="settingsForm.customImgPromptTemplate" placeholder="例：portrait of {{name}}, {{type}} style, anime&#10;&#10;可用占位符：{{name}} {{type}} {{tags}} {{imagePrompt}}"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- 手动 URL -->
+          <div class="s-avatar-mode-card">
+            <div class="s-avatar-mode-header" :class="{'active-mode': settingsForm.avatarMode==='manual'}" @click="settingsForm.avatarMode='manual'">
+              <div>
+                <div class="s-avatar-mode-name">手动粘贴 URL</div>
+                <div class="s-avatar-mode-desc">在角色详情里手动填写头像图片地址</div>
+              </div>
+              <div class="s-radio" :class="{checked: settingsForm.avatarMode==='manual'}"></div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- AI 生成配置 -->
+        <div class="s-card">
+          <div class="s-card-title">AI 生成配置</div>
+
+          <div class="s-item">
+            <label>次元类型偏好（可多选，不选则随机所有类型）</label>
+            <div class="s-chips">
+              <div class="s-chip" v-for="t in typeOptions" :key="t.name" :class="{active: settingsForm.typePrefs.includes(t.name)}" @click="toggleTypePref(t.name)">{{ t.name }}</div>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <input class="s-input" v-model="newTypeName" placeholder="添加自定义次元类型…" @keyup.enter="addCustomType" style="flex:1;" />
+              <button class="s-danger-btn" style="background:#111;color:#fff;border-color:#111;padding:8px 14px;font-size:12px;" @click="addCustomType">添加</button>
+            </div>
+            <div v-if="typeOptions.some(t=>!t.isBuiltin)" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;">
+              <div class="s-hint">自定义类型（可删除）：</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <div v-for="t in typeOptions.filter(t=>!t.isBuiltin)" :key="t.name" style="display:flex;align-items:center;gap:4px;padding:4px 10px;background:#f0f0f5;border-radius:20px;">
+                  <span style="font-size:12px;color:#333;">{{ t.name }}</span>
+                  <span style="cursor:pointer;color:#e53e3e;font-size:14px;line-height:1;" @click="removeCustomType(t.name)">x</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 每个类型的专属提示词 -->
+          <div class="s-item">
+            <label>各次元类型 AI 生成专属提示词</label>
+            <div class="s-hint" style="margin-bottom:6px;">为特定类型设置专属描述，生成时会自动注入。不填则不影响。</div>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <div v-for="t in typeOptions" :key="t.name" style="border:1.5px solid #e5e5ea;border-radius:10px;overflow:hidden;">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f9f9f9;cursor:pointer;" @click="toggleTypePrompt(t.name)">
+                  <span style="font-size:13px;font-weight:600;color:#333;">{{ t.name }}</span>
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <span v-if="t.prompt" style="font-size:10px;color:#48bb78;font-weight:600;">已设置</span>
+                    <i :data-lucide="expandedTypePrompts[t.name] ? 'chevron-up' : 'chevron-down'" style="width:14px;height:14px;color:#aaa;"></i>
+                  </div>
+                </div>
+                <div v-if="expandedTypePrompts[t.name]" style="padding:8px 12px;border-top:1px solid #f0f0f0;">
+                  <textarea class="s-textarea" v-model="t.prompt" :placeholder="`描述「${t.name}」类型角色的特点、风格、世界观要求…`" style="min-height:70px;"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="s-item">
+            <label>每次生成数量</label>
+            <input class="s-number-input" type="number" v-model="settingsForm.genCount" min="1" max="10" />
+          </div>
+
+          <div class="s-item">
+            <label>性格风格偏向（可多选）</label>
+            <div class="s-chips">
+              <div class="s-chip" v-for="s in styleOptions" :key="s.name" :class="{active: settingsForm.stylePrefs.includes(s.name)}" @click="toggleStylePref(s.name)">{{ s.name }}</div>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <input class="s-input" v-model="newStyleName" placeholder="添加自定义性格风格…" @keyup.enter="addCustomStyle" style="flex:1;" />
+              <button class="s-danger-btn" style="background:#111;color:#fff;border-color:#111;padding:8px 14px;font-size:12px;" @click="addCustomStyle">添加</button>
+            </div>
+            <div v-if="styleOptions.some(s=>!s.isBuiltin)" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;">
+              <div class="s-hint">自定义风格（可删除）：</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <div v-for="s in styleOptions.filter(s=>!s.isBuiltin)" :key="s.name" style="display:flex;align-items:center;gap:4px;padding:4px 10px;background:#f0f0f5;border-radius:20px;">
+                  <span style="font-size:12px;color:#333;">{{ s.name }}</span>
+                  <span style="cursor:pointer;color:#e53e3e;font-size:14px;line-height:1;" @click="removeCustomStyle(s.name)">x</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="s-item">
+            <label>世界观背景模板（生成时注入，可留空）</label>
+            <textarea class="s-textarea" v-model="settingsForm.worldTemplate" placeholder="例：这是一个魔法与科技并存的世界，存在多个种族…"></textarea>
+          </div>
+
+          <div class="s-item">
+            <label>性格人设模板（生成时注入，可留空）</label>
+            <textarea class="s-textarea" v-model="settingsForm.personaTemplate" placeholder="例：角色性格偏复杂，有明显的成长弧线…"></textarea>
+          </div>
+
+          <div class="s-item">
+            <label>附加提示词</label>
+            <textarea class="s-textarea" v-model="settingsForm.extraPrompt" placeholder="任何额外要求，会追加到生成提示词末尾…"></textarea>
+          </div>
+
+          <div class="s-item">
+            <label>生图提示词生成模板（告诉 AI 如何输出生图提示词）</label>
+            <textarea class="s-textarea" v-model="settingsForm.imagePromptTemplate" placeholder="例：请同时用英文输出适合该角色的生图提示词，二次元动漫风格，包含外貌、发色、眼睛、服装，不超过80词，放在 imagePrompt 字段里。"></textarea>
+            <div class="s-hint">该模板会追加到角色生成 Prompt 末尾，让 AI 同时输出生图提示词字段。留空则不生成生图提示词。</div>
+          </div>
+        </div>
+
+        <!-- 自定义完整 Prompt -->
+        <div class="s-card">
+          <div class="s-card-title">自定义完整 Prompt</div>
+          <div class="s-item">
+            <div class="s-row">
+              <div class="s-row-label">启用自定义 Prompt</div>
+              <div class="toggle" :class="{on: settingsForm.useCustomPrompt}" @click="settingsForm.useCustomPrompt=!settingsForm.useCustomPrompt"></div>
+            </div>
+            <div class="s-hint" style="margin-top:4px;">开启后将完全使用下方自定义 Prompt，忽略上方所有配置项</div>
+          </div>
+          <div class="s-item" v-if="settingsForm.useCustomPrompt">
+            <label>自定义 Prompt 模板</label>
+            <textarea class="s-textarea mono" v-model="settingsForm.customPrompt"></textarea>
+            <div class="s-hint">可用占位符：{{count}} 生成数量、{{types}} 类型偏好、{{style}} 性格风格、{{typeNames}} 所有类型名称、{{worldTemplate}} 世界观模板、{{personaTemplate}} 人设模板、{{extra}} 附加提示词</div>
+          </div>
+          <button class="s-danger-btn" style="align-self:flex-start;" @click="resetCustomPrompt">恢复默认模板</button>
+        </div>
+
+        <!-- 卡片展示 -->
+        <div class="s-card">
+          <div class="s-card-title">卡片展示</div>
+          <div class="s-row">
+            <div class="s-row-label">显示次元类型标签</div>
+            <div class="toggle" :class="{on: settingsForm.showTypeBadge}" @click="settingsForm.showTypeBadge=!settingsForm.showTypeBadge"></div>
+          </div>
+          <div class="s-row">
+            <div class="s-row-label">显示性格标签</div>
+            <div class="toggle" :class="{on: settingsForm.showTags}" @click="settingsForm.showTags=!settingsForm.showTags"></div>
+          </div>
+        </div>
+
+        <!-- 走廊设置 -->
+        <div class="s-card">
+          <div class="s-card-title">走廊设置</div>
+          <div class="s-item">
+            <label>默认筛选类型</label>
+            <div class="s-chips">
+              <div class="s-chip" :class="{active: settingsForm.defaultFilter==='全部'}" @click="settingsForm.defaultFilter='全部'">全部</div>
+              <div class="s-chip" v-for="t in typeOptions" :key="t.name" :class="{active: settingsForm.defaultFilter===t.name}" @click="settingsForm.defaultFilter=t.name">{{ t.name }}</div>
+            </div>
+          </div>
+          <div class="s-item">
+            <label>精选次元显示数量</label>
+            <input class="s-number-input" type="number" v-model="settingsForm.featuredCount" min="3" max="10" />
+          </div>
+        </div>
+
+        <!-- 数据管理 -->
+        <div class="s-card">
+          <div class="s-card-title">数据管理</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button class="s-danger-btn" @click="clearSkipped">清空已跳过记录</button>
+            <button class="s-danger-btn" @click="clearTempChars">清空已生成缓存</button>
+          </div>
+          <div class="s-hint">清空已跳过记录后，被跳过的角色将重新出现在卡片池中。清空已生成缓存将移除所有 AI 生成但未连接的临时角色。</div>
+        </div>
+
+      </div>
+
+      <div class="settings-save-fixed">
+        <button class="settings-save-btn" @click="saveSettings">保存设置</button>
+      </div>
+    </div>
+  </transition>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="random.js"></script>
+</body>
+</html>

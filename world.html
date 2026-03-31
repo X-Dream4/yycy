@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>世界次元</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="world.css" />
+</head>
+<body>
+<div id="world-app" v-cloak>
+
+  <div class="world-topbar">
+    <button class="world-back-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+    <div class="world-title">世界次元</div>
+<button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+  </div>
+
+  <div class="world-content">
+    <div class="world-module-grid">
+      <div class="world-module-card" @click="goForum">
+        <div class="world-module-icon"><i data-lucide="message-square"></i></div>
+        <div class="world-module-name">次元论坛</div>
+        <div class="world-module-desc">和各次元角色交流讨论</div>
+      </div>
+      <div class="world-module-card" @click="goNovel">
+        <div class="world-module-icon"><i data-lucide="book-open"></i></div>
+        <div class="world-module-name">次元小说</div>
+        <div class="world-module-desc">创作与阅读小说</div>
+      </div>
+      <div class="world-module-card" @click="goManga">
+        <div class="world-module-icon"><i data-lucide="image"></i></div>
+        <div class="world-module-name">次元漫画</div>
+        <div class="world-module-desc">上传与阅读漫画</div>
+      </div>
+
+      <div class="world-module-card coming-soon">
+        <div class="world-module-icon"><i data-lucide="map"></i></div>
+        <div class="world-module-name">次元地图</div>
+        <div class="world-module-desc">即将开放</div>
+      </div>
+      <div class="world-module-card coming-soon">
+        <div class="world-module-icon"><i data-lucide="star"></i></div>
+        <div class="world-module-name">更多模块</div>
+        <div class="world-module-desc">即将开放</div>
+      </div>
+    </div>
+  </div>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="world.js"></script>
+</body>
+</html>

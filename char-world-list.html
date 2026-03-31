@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>角色世界</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="chat.css"/>
+<style>
+.mode-tab { flex:1; text-align:center; padding:8px; border-radius:10px; cursor:pointer; font-size:13px; border:1.5px solid #e5e5ea; transition:all 0.15s; background:#f2f2f7; color:#555; }
+.mode-tab.active { background:#111; color:#fff; border-color:#111; }
+body.dark .mode-tab { background:#333; border-color:#444; color:#aaa; }
+body.dark .mode-tab.active { background:#eee; color:#111; border-color:#eee; }
+</style>
+</head>
+<body>
+<div id="cwl-app" v-cloak>
+
+  <div class="chat-topbar">
+    <div class="topbar-left" style="position:relative;">
+      <button class="icon-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+    </div>
+    <div class="topbar-title" style="display:flex;align-items:center;gap:8px;justify-content:center;">
+      <div style="width:28px;height:28px;border-radius:50%;background:#e0e0e0;background-size:cover;background-position:center;flex-shrink:0;" :style="charAvatar?`background-image:url(${charAvatar})`:''"></div>
+      <span>{{ charName }} 的世界</span>
+    </div>
+    <div class="topbar-left" style="position:relative;">
+      <button class="circle-btn" @click="plusMenuOpen=!plusMenuOpen"><i data-lucide="plus"></i></button>
+      <div class="dropdown-menu" v-if="plusMenuOpen" style="left:auto;right:0;">
+        <div class="dropdown-item" @click="plusMenuOpen=false; addContactShow=true; nextTick(refreshIcons)">
+          <i data-lucide="user-plus"></i><span>添加联系人</span>
+        </div>
+        <div class="dropdown-item" @click="plusMenuOpen=false; newGroupShow=true; nextTick(refreshIcons)">
+          <i data-lucide="users"></i><span>新建群聊</span>
+        </div>
+        <div class="dropdown-item" @click="plusMenuOpen=false; goMoments()">
+          <i data-lucide="layout-list"></i><span>动态</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chat-main">
+    <div class="panel">
+      <div class="panel-label">消息</div>
+      <div class="chat-list">
+        <div class="chat-list-item" @click="openMyChat">
+          <div class="chat-avatar" :style="myAvatar?`background-image:url(${myAvatar})`:''">
+            <span v-if="!myAvatar">{{ myName[0] }}</span>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">{{ myName }}（我）</div>
+            <div class="chat-preview">{{ myLastMsg || '暂无消息' }}</div>
+          </div>
+        </div>
+        <div class="chat-list-item" v-for="room in charRooms" :key="room.id" @click="openRoomChat(room)">
+          <div class="chat-avatar room-avatar">
+            <i data-lucide="users" style="width:20px;height:20px;"></i>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">{{ room.name }}</div>
+            <div class="chat-preview">{{ room.lastMsg || '暂无消息' }}</div>
+          </div>
+        </div>
+        <div class="chat-list-item" v-for="pc in privateChats" :key="pc.id" @click="openPrivateChat(pc)">
+          <div class="chat-avatar" :style="pc.otherAvatar?`background-image:url(${pc.otherAvatar})`:''">
+            <span v-if="!pc.otherAvatar">{{ pc.otherName[0] }}</span>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">{{ pc.otherName }}</div>
+            <div class="chat-preview">{{ pc.lastMsg || '暂无消息' }}</div>
+          </div>
+        </div>
+        <div class="list-empty" v-if="!charRooms.length && !privateChats.length">
+          <i data-lucide="message-circle" style="width:32px;height:32px;color:#ddd;"></i>
+          <span>点击右上角加号开始新对话</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加联系人弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="addContactShow" @click.self="addContactShow=false">
+      <div class="modal-box">
+        <div class="modal-title">添加联系人</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <div class="mode-tab" :class="{active: addContactMode==='existing'}" @click="addContactMode='existing'">现有角色</div>
+          <div class="mode-tab" :class="{active: addContactMode==='new'}" @click="addContactMode='new'">新建角色</div>
+        </div>
+        <div v-if="addContactMode==='existing'">
+          <div style="font-size:12px;color:#aaa;margin-bottom:8px;">从现有角色列表中添加，添加后自动新建私聊</div>
+          <div class="member-list">
+            <div class="member-item" v-for="c in allCharsNotContact" :key="c.id" :class="{selected: selectedOther===c.id}" @click="selectedOther=c.id">
+              <div class="member-avatar" :style="c.avatar?`background-image:url(${c.avatar})`:''">
+                <span v-if="!c.avatar">{{ c.name[0] }}</span>
+              </div>
+              <span>{{ c.name }}</span>
+            </div>
+            <div v-if="!allCharsNotContact.length" style="font-size:13px;color:#aaa;text-align:center;padding:16px;">所有角色已是联系人</div>
+          </div>
+        </div>
+        <div v-if="addContactMode==='new'" style="display:flex;flex-direction:column;gap:8px;">
+          <div style="font-size:12px;color:#aaa;">仅在 {{ charName }} 的手机里新建角色联系人</div>
+          <input class="modal-input" v-model="newContactName" placeholder="联系人名字..." />
+          <textarea class="modal-textarea" v-model="newContactPersona" placeholder="联系人人设（可选）..." style="min-height:60px;"></textarea>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="addContactShow=false">取消</button>
+          <button class="modal-btn confirm" @click="confirmAddContact">添加</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 新建群聊弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="newGroupShow" @click.self="newGroupShow=false">
+      <div class="modal-box">
+        <div class="modal-title">新建群聊</div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:8px;">从 {{ charName }} 的联系人中选择成员（包括你）</div>
+        <input class="modal-input" v-model="newGroupName" placeholder="群名称..." style="margin-bottom:8px;" />
+        <div class="member-list" style="max-height:220px;overflow-y:auto;">
+          <div class="member-item" :class="{selected: newGroupMembers.includes('__me__')}" @click="toggleGroupMember('__me__')">
+            <div class="member-avatar" :style="myAvatar?`background-image:url(${myAvatar})`:''">
+              <span v-if="!myAvatar">{{ myName[0] }}</span>
+            </div>
+            <span>{{ myName }}（我）</span>
+          </div>
+          <div class="member-item" v-for="c in charContacts" :key="c.id" :class="{selected: newGroupMembers.includes(c.id)}" @click="toggleGroupMember(c.id)">
+            <div class="member-avatar" :style="c.avatar?`background-image:url(${c.avatar})`:''">
+              <span v-if="!c.avatar">{{ c.name[0] }}</span>
+            </div>
+            <span>{{ c.name }}</span>
+          </div>
+          <div v-if="!charContacts.length" style="font-size:13px;color:#aaa;text-align:center;padding:16px;">还没有联系人，先添加联系人吧</div>
+        </div>
+        <div style="font-size:11px;color:#aaa;">已选 {{ newGroupMembers.length }} 人</div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="newGroupShow=false">取消</button>
+          <button class="modal-btn confirm" @click="createGroup" :disabled="!newGroupName.trim() || newGroupMembers.length<1">创建</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+</div>
+<script src="db.js"></script>
+<script src="char-world-list.js"></script>
+</body>
+</html>

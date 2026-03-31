@@ -1,0 +1,1640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>聊天</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="chatroom.css" />
+</head>
+<body>
+<div class="page-loading-mask" id="loadingMask">
+  <div class="loading-tangle">
+    <svg viewBox="0 0 80 80">
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="30" ry="18"/>
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="18" ry="30"/>
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="35" ry="10"/>
+      <ellipse class="loading-tangle-ring" cx="40" cy="40" rx="10" ry="35"/>
+    </svg>
+  </div>
+  <div class="loading-text">正在连接中…</div>
+</div>
+
+<div id="chatroom-app" v-cloak :class="{ready: appReady}">
+  <div class="msg-area" ref="msgArea">
+
+    <transition name="toolbar">
+      <div class="multiselect-bar" v-if="multiSelectMode && appReady">
+        <span>已选 {{ selectedMsgs.length }} 条</span>
+        <button @click="deleteSelected">删除选中</button>
+        <button @click="cancelMultiSelect">取消</button>
+      </div>
+    </transition>
+
+    <!-- 查看过往消息按键 -->
+    <div class="history-btn-wrap" v-if="!showHistory && allMessages.length > MSG_LIMIT">
+      <button class="history-load-btn" @click="showHistory=true">查看过往消息</button>
+    </div>
+
+    <div class="msg-list">
+      <div v-for="(msg, i) in messagesWithTime" :key="msg.id">
+
+       <div v-if="msg.isTimeDivider" class="time-divider"><span>{{ formatMsgTime(msg.ts) }}</span></div>
+        <div v-if="!msg.isTimeDivider && msg.recalled" class="recall-tip" @click="toggleRecallReveal(msg)">
+          {{ msg.role === 'user' ? myName : charName }} 撤回了一条消息
+          <span class="recall-reveal-hint">{{ msg.revealed ? '收起' : '查看' }}</span>
+        </div>
+
+        <div v-if="!msg.isTimeDivider && msg.recalled && msg.revealed" class="recall-revealed">{{ msg.content }}</div>
+
+        <!-- 自动触发隐藏消息：折叠显示 -->
+        <div v-if="!msg.isTimeDivider && msg.type==='auto_trigger'" class="time-divider" style="cursor:pointer;" @click="msg.triggerExpanded=!msg.triggerExpanded">
+          <span style="background:rgba(0,0,0,0.05);color:rgba(0,0,0,0.3);font-size:10px;padding:2px 10px;border-radius:10px;user-select:none;">
+            ——
+          </span>
+          <span v-if="msg.triggerExpanded" style="display:block;font-size:11px;color:#aaa;padding:4px 12px;text-align:center;white-space:pre-wrap;word-break:break-all;">{{ msg.content }}</span>
+        </div>
+
+        <div v-if="!msg.isTimeDivider && !msg.recalled && msg.type!=='auto_trigger'" class="msg-row" :class="[msg.role==='user'?'row-right':'row-left', multiSelectMode?'selectable':'', selectedMsgs.includes(msg.id)?'selected-row':'']" @click="multiSelectMode ? toggleSelect(msg.id) : null" @touchstart="onTouchStart(msg, i, $event)" @touchend="onTouchEnd" @touchmove="onTouchMove" @mousedown="onMouseDown(msg, i, $event)" @mouseup="onMouseUp">
+
+          <div class="select-check" v-if="multiSelectMode">
+            <div class="check-circle" :class="{checked: selectedMsgs.includes(msg.id)}"></div>
+          </div>
+
+          <div class="msg-wrap" :class="msg.role==='user'?'wrap-right':'wrap-left'">
+            <div class="msg-sender" v-if="!hideNames">{{ msg.role==='user' ? myName : charName }}</div>
+
+            <div class="msg-quote" v-if="msg.quoteId">
+              <span class="quote-name">{{ getMsg(msg.quoteId)?.role==='user' ? myName : charName }}</span>
+              <span class="quote-content">{{ getMsg(msg.quoteId)?.content }}</span>
+            </div>
+
+            <div class="msg-bubble-row" :class="msg.role==='user'?'bubble-row-right':'bubble-row-left'">
+              <div class="chat-inline-avatar avatar-left" v-if="msg.role==='char' && showCharAvatar" :style="charAvatar?`background-image:url(${charAvatar})`:''">
+                <span v-if="!charAvatar">{{ charName[0] }}</span>
+              </div>
+              <div class="block-badge user-blocked-badge" v-if="msg.role==='user' && msg.blockedByCharWhenSent">!</div>
+              <div class="msg-timestamp ts-me" v-if="showTimestamp && !msg.isTimeDivider && msg.role==='user' && getMsgTimestamp(msg)" :class="'ts-'+tsMePos" :style="`font-size:${tsSize}px;color:${tsMeColor};opacity:${tsMeOpacity};`">{{ getMsgTimestamp(msg) }}</div>
+              <div v-if="msg.type==='sticker'" class="msg-sticker">
+                <img :src="getStickerUrl(msg.content)" :alt="msg.content" />
+              </div>
+                <div v-else class="msg-bubble" :class="[msg.role==='user'?'bubble-right':'bubble-left', msg.type==='whisper'?'bubble-whisper':'', msg.editing?'bubble-editing':'']"
+                  @click="msg.foreignTranslation && msg.role==='char' && !msg.loading && !msg.editing ? msg.foreignTranslationShow=!msg.foreignTranslationShow : (translateOn && msg.role==='char' && !msg.loading && !msg.editing ? toggleTranslate(msg) : null)"
+                  :style="(msg.foreignTranslation && msg.role==='char') || (translateOn && msg.role==='char' && !msg.loading) ? 'cursor:pointer;' : ''">
+                <span v-if="msg.loading" class="msg-loading"><span></span><span></span><span></span></span>
+                <div v-else-if="msg.editing">
+                  <textarea class="edit-textarea" v-model="msg.editContent" @keydown.enter.exact.prevent="confirmEdit(msg)"></textarea>
+                  <div class="edit-btns">
+                    <button @click="cancelEdit(msg)">取消</button>
+                    <button @click="confirmEdit(msg)">确认</button>
+                  </div>
+                </div>
+                <span v-else>{{ msg.content }}</span>
+                <span v-if="msg.type==='whisper'" class="whisper-tag">心声</span>
+                <!-- 外语模式翻译 -->
+                <div v-if="msg.foreignTranslation && msg.foreignTranslationShow"
+                  style="font-size:12px;color:#888;margin-top:4px;padding-top:4px;border-top:1px solid rgba(0,0,0,0.08);">
+                  {{ msg.foreignTranslation }}
+                </div>
+                <!-- 普通翻译区域 -->
+                <div v-if="msg.translating" class="msg-translation">
+                  <div class="msg-translation-loading"><span></span><span></span><span></span></div>
+                </div>
+                <div v-else-if="msg.translation && !msg.translationHidden" class="msg-translation" @click.stop="msg.translationHidden=true">
+                  {{ msg.translation }}
+                </div>
+              </div>
+              <div class="block-badge char-blocked-badge" v-if="msg.role==='char' && msg.blockedWhenSent">!</div>
+            <div class="msg-timestamp-row-char" v-if="showTimestamp && !msg.isTimeDivider && msg.role==='char' && getMsgTimestamp(msg)" :style="`font-size:${tsSize}px;color:${tsColor};opacity:${tsOpacity};`">{{ getMsgTimestamp(msg) }}</div>
+              <!-- v-else 结束，sticker 和 bubble 共用同一层 -->
+              <div class="chat-inline-avatar avatar-right" v-if="msg.role==='user' && showCharAvatar" :style="myAvatar?`background-image:url(${myAvatar})`:''">
+                <span v-if="!myAvatar">{{ myName[0] }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <transition name="popup">
+          <div class="bubble-menu" v-if="bubbleMenuMsgId===msg.id && !msg.recalled && appReady" :style="`top:${bubbleMenuPos.top}px;`">
+            <button class="bubble-menu-btn" @click="quoteMsg(msg)"><i data-lucide="corner-up-left"></i><span>引用</span></button>
+            <button class="bubble-menu-btn" @click="recallMsg(msg)"><i data-lucide="undo-2"></i><span>撤回</span></button>
+            <button class="bubble-menu-btn" @click="editMsg(msg)"><i data-lucide="pencil"></i><span>编辑</span></button>
+            <button class="bubble-menu-btn" @click="openSplit(msg)"><i data-lucide="scissors"></i><span>拆分</span></button>
+            <button class="bubble-menu-btn" v-if="msg.role==='char'" @click="openInsertAfter(msg)"><i data-lucide="plus-circle"></i><span>插入</span></button>
+            <button class="bubble-menu-btn" @click="deleteMsg(msg)"><i data-lucide="trash-2"></i><span>删除</span></button>
+            <button class="bubble-menu-btn" @click="startMultiSelect(msg.id)"><i data-lucide="check-square"></i><span>多选</span></button>
+            <button class="bubble-menu-btn" @click="collectMsg(msg); bubbleMenuMsgId=null"><i data-lucide="bookmark"></i><span>收藏</span></button>
+            <button class="bubble-menu-btn" @click="bubbleMenuMsgId=null"><i data-lucide="x"></i><span>关闭</span></button>
+          </div>
+        </transition>
+
+      </div>
+    </div>
+    <div class="msg-bottom-spacer"></div>
+  </div>
+
+  <transition name="toolbar">
+    <div class="toolbar" v-if="toolbarOpen && appReady">
+      <button class="toolbar-btn" @click="callApi"><i data-lucide="zap"></i><span>调用API</span></button>
+      <button class="toolbar-btn" @click="openChatSettings"><i data-lucide="settings-2"></i><span>聊天设置</span></button>
+      <button class="toolbar-btn" @click="openDimensionLink"><i data-lucide="link-2"></i><span>次元链接</span></button>
+      <button class="toolbar-btn" @click="openMySettings"><i data-lucide="user"></i><span>我的设置</span></button>
+      <button class="toolbar-btn" @click="openPeekSoul"><i data-lucide="eye"></i><span>窥探心声</span></button>
+      <button class="toolbar-btn" @click="openDimensionMirror"><i data-lucide="monitor"></i><span>次元时境</span></button>
+      <button class="toolbar-btn" @click="openMyWhisper"><i data-lucide="message-circle"></i><span>我的心声</span></button>
+      <button class="toolbar-btn" @click="openBeauty"><i data-lucide="sparkles"></i><span>聊天美化</span></button>
+      <button class="toolbar-btn" @click="openSummary"><i data-lucide="file-text"></i><span>聊天总结</span></button>
+      <button class="toolbar-btn" @click="openTheater"><i data-lucide="clapperboard"></i><span>次元剧场</span></button>
+      <button class="toolbar-btn" onclick="openQuickNav()"><i data-lucide="navigation"></i><span>快捷跳转</span></button>
+      <button class="toolbar-btn" @click="openEmoji"><i data-lucide="smile"></i><span>表情包</span></button>
+      <button class="toolbar-btn" @click="openBlock" :style="isBlocked?'color:#e53e3e;':''"><i data-lucide="user-x"></i><span>{{ isBlocked?'已拉黑':'拉黑' }}</span></button>
+      <button class="toolbar-btn" @click="deleteCharShow=true" style="color:#e53e3e;"><i data-lucide="trash-2"></i><span>删除</span></button>
+      <button class="toolbar-btn" @click="goBack"><i data-lucide="arrow-left"></i><span>返回</span></button>
+    </div>
+  </transition>
+  <div class="sticker-suggest" v-if="stickerSuggestOn && stickerSuggests.length && inputText.trim()">
+    <div class="sticker-suggest-item" v-for="s in stickerSuggests" :key="s.name" @click="sendSticker(s)">
+      <img :src="s.url" :alt="s.name" />
+      <span>{{ s.name }}</span>
+    </div>
+  </div>
+
+  <div class="quote-preview" v-if="quotingMsg && appReady">
+    <div class="quote-preview-inner">
+      <span class="quote-preview-name">引用：{{ quotingMsg.role==='user'?myName:charName }}</span>
+      <span class="quote-preview-content">{{ quotingMsg.content }}</span>
+    </div>
+    <button class="quote-cancel" @click="quotingMsg=null"><i data-lucide="x"></i></button>
+  </div>
+
+  <div class="input-area">
+    <button class="round-btn plus-btn" @click="toggleToolbar"><i data-lucide="plus"></i></button>
+    <div class="input-wrap">
+      <textarea class="chat-input" v-model="inputText" placeholder="输入消息..." rows="1" @keydown.enter.exact.prevent="sendMsg" @input="autoResize" ref="inputRef"></textarea>
+    </div>
+    <button class="round-btn send-btn" @click="sendMsg"><i data-lucide="send"></i></button>
+  </div>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="mySettingsShow && appReady" @click.self="mySettingsShow=false">
+      <div class="modal-box">
+        <div class="modal-title">我的设置</div>
+        <div class="modal-item"><label>我的聊天名</label><input class="modal-input" v-model="myNameInput" placeholder="输入你的名字..." /></div>
+        <div class="modal-item"><label>我的人设</label><textarea class="modal-textarea" v-model="myPersonaInput" placeholder="描述你自己的人设..."></textarea></div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="mySettingsShow=false">取消</button>
+          <button class="modal-btn confirm" @click="saveMySettings">保存</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="chatSettingsShow && appReady" @click.self="chatSettingsShow=false">
+      <div class="modal-box">
+        <div class="modal-title">聊天设置</div>
+        <div class="modal-item"><label>角色备注名</label><input class="modal-input" v-model="charNameInput" placeholder="角色的备注名..." /></div>
+<div class="modal-item">
+  <label>角色真名（自动从人设提取，可修改）</label>
+  <input class="modal-input" v-model="charRealNameInput" placeholder="未能自动提取，可手动填写..." />
+  <div style="font-size:11px;color:#aaa;margin-top:3px;">真名用于聊天总结、剧场生成等功能中的名字替换</div>
+</div>
+        <div class="modal-item"><label>世界观</label><textarea class="modal-textarea" v-model="charWorldInput" placeholder="角色所在的世界观..."></textarea></div>
+        <div class="modal-item"><label>角色人设</label><textarea class="modal-textarea" v-model="charPersonaInput" placeholder="角色的性格、背景..."></textarea></div>
+        <div class="modal-item"><label>AI可读取消息条数</label><input class="modal-input" type="number" v-model="aiReadCountInput" min="5" max="200" placeholder="默认20条" /></div>
+        <div class="modal-item">
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#555;">
+            <span>角色知道当前实时时间</span>
+            <div class="toggle" :class="{on: realtimeTimeOn}" @click="realtimeTimeOn=!realtimeTimeOn"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后每次调用API时注入当前准确时间</div>
+        </div>
+        <div class="modal-item">
+          <label>启用的世界书</label>
+          <div v-if="allWorldBooks.length">
+            <!-- 分类选择 -->
+            <div v-for="cat in wbCategoriesInChat" :key="cat" class="wb-chat-cat">
+              <div class="wb-chat-cat-header" @click="toggleCatExpand(cat)">
+                <span style="font-size:13px;font-weight:600;color:#333;">{{ cat || '无分类' }}</span>
+                <div style="display:flex;gap:6px;align-items:center;">
+                  <span style="font-size:11px;color:#aaa;">{{ wbBooksByCat(cat).filter(b=>selectedWorldBooks.includes(b.id)).length }}/{{ wbBooksByCat(cat).length }}</span>
+                  <button class="wb-cat-sel-btn" @click.stop="selectAllCat(cat)">全选</button>
+                  <i :data-lucide="expandedCats.includes(cat)?'chevron-up':'chevron-down'" style="width:14px;height:14px;"></i>
+                </div>
+              </div>
+              <div v-if="expandedCats.includes(cat)" class="wb-chat-cat-books">
+                <div class="wb-select-item" v-for="book in wbBooksByCat(cat)" :key="book.id" :class="{selected: selectedWorldBooks.includes(book.id)}" @click="toggleWorldBook(book.id)">
+                  <div class="wb-item-type" :class="'type-'+book.type" style="font-size:9px;padding:2px 6px;">{{ wbTypeLabel(book.type) }}</div>
+                  <span style="font-size:13px;flex:1;">{{ book.name }}</span>
+                  <span style="font-size:10px;color:#aaa;" v-if="book.keywords">{{ book.keywords }}</span>
+                  <span style="font-size:10px;color:#ccc;" v-else>始终生效</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#aaa;padding:8px 0;" v-else>世界书馆暂无世界书</div>
+        </div>
+        <!-- 外语模式 -->
+        <div class="modal-item">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:13px;color:#555;font-weight:500;">外语模式</span>
+            <div class="toggle" :class="{on: foreignOn}" @click="foreignOn=!foreignOn; if(foreignOn) translateOn=false;"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后角色用所选语言发消息，每条消息附带中文翻译，点击气泡展开</div>
+        </div>
+        <div class="modal-item" v-if="foreignOn">
+          <label>角色使用的语言</label>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+            <div v-for="lang in foreignLangOptions" :key="lang"
+              style="padding:6px 14px;border-radius:20px;font-size:13px;cursor:pointer;border:1.5px solid #e5e5ea;transition:all 0.15s;"
+              :style="foreignLang===lang ? 'background:#111;color:#fff;border-color:#111;' : 'background:#fff;color:#555;'"
+              @click="foreignLang=lang">{{ lang }}</div>
+          </div>
+          <div v-if="foreignLang==='其他'" style="margin-top:6px;">
+            <input class="modal-input" v-model="foreignLangCustom" placeholder="输入语言名称，如：泰语、德语..." />
+          </div>
+        </div>
+        <!-- 知晓热搜 -->
+        <div class="modal-item">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:13px;color:#555;font-weight:500;">知晓热搜</span>
+            <div class="toggle" :class="{on: hotAwareOn}" @click="hotAwareOn=!hotAwareOn"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后调用API时注入当前热搜内容，角色可以聊热搜话题</div>
+        </div>
+        <div v-if="hotAwareOn" class="modal-item" style="display:flex;flex-direction:column;gap:8px;">
+          <div style="font-size:12px;color:#555;font-weight:500;">选择热搜平台和注入条数</div>
+          <div v-for="p in hotPlatformOptions" :key="p.key" style="display:flex;align-items:center;gap:8px;">
+            <div style="display:flex;align-items:center;gap:6px;flex:1;cursor:pointer;" @click="hotAwarePlatforms.includes(p.key) ? hotAwarePlatforms.splice(hotAwarePlatforms.indexOf(p.key),1) : hotAwarePlatforms.push(p.key)">
+              <div :style="'width:18px;height:18px;border-radius:4px;border:1.5px solid;display:flex;align-items:center;justify-content:center;flex-shrink:0;' + (hotAwarePlatforms.includes(p.key) ? 'background:#111;border-color:#111;' : 'background:#fff;border-color:#ccc;')">
+                <span v-if="hotAwarePlatforms.includes(p.key)" style="color:#fff;font-size:12px;line-height:1;">✓</span>
+              </div>
+              <span style="font-size:13px;color:#333;">{{ p.label }}</span>
+            </div>
+            <div v-if="hotAwarePlatforms.includes(p.key)" style="display:flex;align-items:center;gap:4px;">
+              <span style="font-size:11px;color:#aaa;">条数</span>
+              <input class="modal-input" type="number" min="1" max="20"
+                :value="hotAwareCounts[p.key] || 5"
+                @change="hotAwareCounts[p.key]=parseInt($event.target.value)||5"
+                style="width:52px;text-align:center;padding:4px 6px;font-size:12px;" />
+            </div>
+          </div>
+          <div style="font-size:11px;color:#aaa;">注意：需要先在次元论坛里刷新过热搜才有缓存数据</div>
+        </div>
+
+        <!-- 知晓次元小说 -->
+        <div class="modal-item">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:13px;color:#555;font-weight:500;">知晓次元小说</span>
+            <div class="toggle" :class="{on: novelAwareOn}" @click="novelAwareOn=!novelAwareOn"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后调用API时注入小说内容，角色可以了解作品</div>
+        </div>
+        <div v-if="novelAwareOn" class="modal-item" style="display:flex;flex-direction:column;gap:10px;">
+          <div style="font-size:12px;color:#555;font-weight:500;">选择要让角色知晓的小说作品</div>
+          <div v-if="!allNovels.length" style="font-size:12px;color:#aaa;">次元小说里还没有作品</div>
+          <div v-for="novel in allNovels" :key="novel.id" style="border:1.5px solid #e5e5ea;border-radius:12px;overflow:hidden;">
+            <!-- 作品头部 -->
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#f9f9f9;cursor:pointer;" @click="toggleNovelExpand(novel.id)">
+              <div style="display:flex;align-items:center;gap:6px;flex:1;" @click.stop="toggleNovelAware(novel)">
+                <div style="width:18px;height:18px;border-radius:4px;border:1.5px solid;flex-shrink:0;display:flex;align-items:center;justify-content:center;"
+                  :style="getNovelSetting(novel.id) ? 'background:#111;border-color:#111;' : 'background:#fff;border-color:#ccc;'">
+                  <span v-if="getNovelSetting(novel.id)" style="color:#fff;font-size:12px;line-height:1;">✓</span>
+                </div>
+                <span style="font-size:13px;font-weight:600;color:#333;">《{{ novel.title }}》</span>
+              </div>
+              <i :data-lucide="expandedNovelIds.includes(novel.id)?'chevron-up':'chevron-down'" style="width:14px;height:14px;color:#aaa;flex-shrink:0;"></i>
+            </div>
+
+            <!-- 作品详细设置 -->
+            <div v-if="expandedNovelIds.includes(novel.id) && getNovelSetting(novel.id)" style="padding:10px 12px;display:flex;flex-direction:column;gap:8px;border-top:1px solid #f0f0f0;">
+
+              <!-- 基础信息 -->
+              <div style="font-size:11px;font-weight:700;color:#aaa;">基础信息</div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                <div style="padding:4px 10px;border-radius:20px;font-size:12px;background:#111;color:#fff;cursor:default;">作品名（默认）</div>
+                <div v-for="field in [{key:'type',label:'类型'},{key:'synopsis',label:'简介'},{key:'tags',label:'标签'},{key:'chars',label:'登场角色'},{key:'charRelations',label:'角色关系'}]"
+                  :key="field.key"
+                  style="padding:4px 10px;border-radius:20px;font-size:12px;cursor:pointer;border:1.5px solid #e5e5ea;transition:all 0.15s;"
+                  :style="getNovelSetting(novel.id)[field.key] ? 'background:#111;color:#fff;border-color:#111;' : 'background:#fff;color:#555;'"
+                  @click="getNovelSetting(novel.id)[field.key]=!getNovelSetting(novel.id)[field.key]">
+                  {{ field.label }}
+                </div>
+              </div>
+
+              <!-- 章节设置 -->
+              <div v-if="novel.chapters && novel.chapters.length">
+                <div style="font-size:11px;font-weight:700;color:#aaa;margin-bottom:6px;">章节内容（选择后注入）</div>
+                <div style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;">
+                  <div v-for="(ch, ci) in novel.chapters" :key="ci" style="background:#f9f9f9;border-radius:8px;padding:8px 10px;">
+                    <div style="font-size:12px;font-weight:600;color:#333;margin-bottom:6px;">第{{ ci+1 }}章 《{{ ch.title }}》</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                      <div style="padding:3px 8px;border-radius:12px;font-size:11px;cursor:pointer;border:1px solid #e5e5ea;transition:all 0.15s;"
+                        :style="getNovelSetting(novel.id).summaryChapters.includes(ci) ? 'background:#111;color:#fff;border-color:#111;' : 'background:#fff;color:#555;'"
+                        @click="toggleChapterItem(novel.id,'summaryChapters',ci)">
+                        章节总结{{ ch.summary ? '' : '（暂无）' }}
+                      </div>
+                      <div style="padding:3px 8px;border-radius:12px;font-size:11px;cursor:pointer;border:1px solid #e5e5ea;transition:all 0.15s;"
+                        :style="getNovelSetting(novel.id).contentChapters.includes(ci) ? 'background:#111;color:#fff;border-color:#111;' : 'background:#fff;color:#555;'"
+                        @click="toggleChapterItem(novel.id,'contentChapters',ci)">
+                        章节正文（最多2000字）
+                      </div>
+                      <div style="padding:3px 8px;border-radius:12px;font-size:11px;cursor:pointer;border:1px solid #e5e5ea;transition:all 0.15s;"
+                        :style="getNovelSetting(novel.id).commentChapters.includes(ci) ? 'background:#111;color:#fff;border-color:#111;' : 'background:#fff;color:#555;'"
+                        @click="toggleChapterItem(novel.id,'commentChapters',ci)">
+                        章节评论{{ (ch.comments && ch.comments.length) ? `（${ch.comments.length}条）` : '（暂无）' }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else style="font-size:11px;color:#aaa;">该作品暂无章节</div>
+            </div>
+
+            <div v-else-if="expandedNovelIds.includes(novel.id) && !getNovelSetting(novel.id)" style="padding:10px 12px;font-size:12px;color:#aaa;border-top:1px solid #f0f0f0;">
+              请先勾选作品再展开设置
+            </div>
+          </div>
+        </div>
+
+        <!-- 翻译设置 -->
+        <div class="modal-item">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:13px;color:#555;font-weight:500;">点击气泡翻译</span>
+            <div class="toggle" :class="{on: translateOn && !foreignOn}" @click="if(!foreignOn) translateOn=!translateOn;" :style="foreignOn ? 'opacity:0.4;cursor:not-allowed;' : ''"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px;">{{ foreignOn ? '外语模式开启时不可用' : '开启后点击角色气泡自动翻译为所选语言' }}</div>
+        </div>
+        <div class="modal-item" v-if="translateOn">
+          <label>翻译目标语言</label>
+          <select class="modal-input" v-model="translateLang" style="padding:10px 12px;">
+            <option value="zh-CN">中文（简体）</option>
+            <option value="zh-TW">中文（繁體）</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="es">Español</option>
+            <option value="pt">Português</option>
+            <option value="ru">Русский</option>
+            <option value="ar">العربية</option>
+            <option value="it">Italiano</option>
+            <option value="nl">Nederlands</option>
+            <option value="pl">Polski</option>
+            <option value="tr">Türkçe</option>
+            <option value="vi">Tiếng Việt</option>
+            <option value="th">ภาษาไทย</option>
+            <option value="id">Bahasa Indonesia</option>
+          </select>
+        </div>
+<!-- 自动发消息设置 -->
+<div class="beauty-section" style="margin-top:4px;">
+  <div class="beauty-section-title">角色自动发消息</div>
+  <div class="beauty-toggle-row">
+    <span>开启自动发消息</span>
+    <div class="toggle" :class="{on: autoSendOn}" @click="toggleAutoSend"></div>
+  </div>
+  <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后角色将按设定时间主动发消息（需保持聊天界面打开）</div>
+
+  <div v-if="autoSendOn" style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">
+    <!-- 模式切换 -->
+    <div style="display:flex;gap:8px;">
+      <div class="summary-pos-btn" :class="{active: autoSendMode==='interval'}" @click="autoSendMode='interval'; saveAutoSendSettings(); if(autoSendOn) startAutoSend()">间隔发送</div>
+      <div class="summary-pos-btn" :class="{active: autoSendMode==='time'}" @click="autoSendMode='time'; saveAutoSendSettings(); if(autoSendOn) startAutoSend()">定时发送</div>
+    </div>
+
+    <!-- 间隔模式 -->
+    <div v-if="autoSendMode==='interval'" style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:12px;color:#555;font-weight:500;">每隔多久发一次</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input class="modal-input" type="number" v-model="autoSendInterval" min="1" max="999" style="width:80px;text-align:center;" @change="saveAutoSendSettings" />
+        <div style="display:flex;gap:6px;">
+          <div class="summary-pos-btn" :class="{active: autoSendIntervalUnit==='sec'}" @click="autoSendIntervalUnit='sec'; saveAutoSendSettings(); if(autoSendOn) startAutoSend()">秒</div>
+          <div class="summary-pos-btn" :class="{active: autoSendIntervalUnit==='min'}" @click="autoSendIntervalUnit='min'; saveAutoSendSettings(); if(autoSendOn) startAutoSend()">分钟</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#aaa;">注意：间隔太短会消耗大量API调用次数</div>
+    </div>
+
+    <!-- 定时模式 -->
+    <div v-if="autoSendMode==='time'" style="display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:12px;color:#555;font-weight:500;">设定发送时间点</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input class="modal-input" type="time" v-model="autoSendNewTime" style="flex:1;" />
+        <button class="modal-btn confirm" style="flex:none;padding:0 14px;height:38px;font-size:13px;" @click="addAutoSendTime">添加</button>
+      </div>
+      <div v-if="autoSendTimes.length" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;">
+        <div v-for="(t,i) in autoSendTimes" :key="i" style="display:flex;align-items:center;gap:4px;padding:4px 10px;background:#f0f0f5;border-radius:20px;font-size:13px;color:#333;">
+          <span>{{ t }}</span>
+          <span style="cursor:pointer;color:#e53e3e;font-size:14px;line-height:1;" @click="removeAutoSendTime(i)">×</span>
+        </div>
+      </div>
+      <div v-else style="font-size:11px;color:#aaa;">还未添加时间点</div>
+      <div style="font-size:11px;color:#aaa;">到达设定时间时角色会主动发消息（精确到分钟）</div>
+    </div>
+
+    <!-- 触发方式 -->
+    <div style="display:flex;flex-direction:column;gap:6px;padding-top:4px;border-top:1px solid #f0f0f0;margin-top:4px;">
+      <div class="beauty-toggle-row">
+        <span style="font-size:12px;color:#555;font-weight:500;">用隐藏消息触发回复</span>
+        <div class="toggle" :class="{on: autoSendUseHiddenMsg}" @click="autoSendUseHiddenMsg=!autoSendUseHiddenMsg; saveAutoSendSettings()"></div>
+      </div>
+      <div style="font-size:11px;color:#aaa;">开启后会先发一条你看不到的心声消息，让角色主动回复（兼容 Claude 等需要 user 先说话的模型）；关闭则直接调用 API</div>
+      <div v-if="autoSendUseHiddenMsg" style="display:flex;flex-direction:column;gap:4px;">
+        <div style="font-size:12px;color:#555;font-weight:500;">隐藏触发消息内容（可自定义）</div>
+        <textarea class="modal-textarea" v-model="autoSendHiddenMsg" @change="saveAutoSendSettings" style="min-height:90px;font-size:12px;" placeholder="输入触发角色主动发消息的提示词..."></textarea>
+        <div style="font-size:11px;color:#aaa;">这条消息会以折叠条「——」显示在对话中，点击可展开查看内容，角色能感知但不会以普通气泡形式出现</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 消息通知设置 -->
+<div class="beauty-section" style="margin-top:4px;">
+  <div class="beauty-section-title">消息通知</div>
+  <div class="beauty-toggle-row">
+    <span>角色消息弹窗提示</span>
+    <div class="toggle" :class="{on: notifyOn}" @click="toggleNotify"></div>
+  </div>
+  <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后收到角色消息时在所有页面顶部弹出提示</div>
+  <div v-if="notifyOn" style="margin-top:8px;">
+    <div class="beauty-toggle-row">
+      <span>浏览器系统通知</span>
+      <div class="toggle" :class="{on: notifySystemOn}" @click="toggleSystemNotify"></div>
+    </div>
+    <div style="font-size:11px;color:#aaa;margin-top:2px;">允许浏览器发送系统级通知（切换到其他应用时仍可收到）</div>
+  </div>
+</div>
+<!-- 后台保活设置 -->
+<div class="beauty-section" style="margin-top:4px;">
+  <div class="beauty-section-title">后台保活</div>
+  <div class="beauty-toggle-row">
+    <span>开启后台保活</span>
+    <div class="toggle" :class="{on: keepAliveOn}" @click="toggleKeepAlive"></div>
+  </div>
+  <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后播放静音音频并保持页面活跃，降低被系统杀死的概率（会稍微增加耗电）</div>
+</div>
+<!-- 角色世界设置 -->
+<div class="beauty-section" style="margin-top:4px;">
+  <div class="beauty-section-title">角色世界</div>
+  <div style="font-size:11px;color:#aaa;margin-bottom:6px;">设置进入该角色手机的解锁方式和密码</div>
+  <button class="modal-btn cancel" style="font-size:13px;padding:10px;" @click="openCharWorldSetting">角色世界设置</button>
+</div>
+<!-- 角色社交圈 -->
+<div class="beauty-section" style="margin-top:4px;">
+  <div class="beauty-section-title">角色社交圈</div>
+  <div class="beauty-toggle-row">
+    <span>开启角色社交圈</span>
+    <div class="toggle" :class="{on: socialCircleOn}" @click="socialCircleOn=!socialCircleOn"></div>
+  </div>
+  <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后角色可以主动给其他角色发私信或在群里发言，用【私信:名字|内容】或【群发:群名字】触发</div>
+  <div v-if="socialCircleOn" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+    <div class="beauty-toggle-row">
+      <span style="font-size:13px;">社交记录注入记忆</span>
+      <div class="toggle" :class="{on: socialInjectOn}" @click="socialInjectOn=!socialInjectOn"></div>
+    </div>
+    <div style="font-size:11px;color:#aaa;">开启后角色的私信和群聊记录自动注入到他的记忆里</div>
+    <div v-if="socialInjectOn" style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:12px;color:#555;">注入最近</span>
+      <input class="modal-input" type="number" v-model="socialInjectCount" min="1" max="20" style="width:64px;text-align:center;" />
+      <span style="font-size:12px;color:#555;">条</span>
+    </div>
+  </div>
+</div>
+
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="chatSettingsShow=false">取消</button>
+          <button class="modal-btn confirm" @click="saveChatSettings">保存</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="dimensionShow && appReady" @click.self="dimensionShow=false">
+      <div class="modal-box">
+        <div class="modal-title">次元链接</div>
+        <div class="dimension-info">
+          <div class="dimension-row"><span>角色名</span><span>{{ charName }}</span></div>
+          <div class="dimension-row"><span>世界观</span><span>{{ charWorld || '未设置' }}</span></div>
+          <div class="dimension-row"><span>已启用世界书</span><span>{{ selectedWorldBooks.length }} 本</span></div>
+          <div class="dimension-row"><span>Token预估</span><span>{{ tokenEstimate }} tokens</span></div>
+          <div class="dimension-row"><span>消息储存</span><span>{{ allMessages.length }} 条 / 约 {{ msgMemoryKB }} KB</span></div>
+        </div>
+        <div class="modal-item" style="margin-top:4px;">
+          <label style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;">控制台日志</label>
+          <div class="console-box">
+            <div class="console-line" v-for="(log,i) in charConsoleLogs" :key="i" :class="log.type">
+              <span class="console-time">{{ log.time }}</span>
+              <span>{{ log.msg }}</span>
+            </div>
+            <div v-if="!charConsoleLogs.length" class="console-empty">暂无日志</div>
+          </div>
+          <button class="modal-btn cancel" style="margin-top:6px;font-size:12px;padding:8px;" @click="charConsoleLogs=[];dbSet('charLogs_'+charId,[])">清空日志</button>
+        </div>
+        <div class="modal-btns"><button class="modal-btn cancel" @click="dimensionShow=false">关闭</button></div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="peekSoulShow && appReady" @click.self="peekSoulShow=false">
+      <div class="modal-box">
+        <div class="modal-title">窥探心声</div>
+        <div class="peek-loading" v-if="peekLoading"><span></span><span></span><span></span></div>
+        <div v-else-if="peekResult">
+          <div class="peek-section"><div class="peek-section-title">动作 / 情绪</div><div class="peek-content">{{ peekResult.action }}</div></div>
+          <div class="peek-section"><div class="peek-section-title">内心独白</div><div class="peek-content">{{ peekResult.soul }}</div></div>
+        </div>
+        <div class="peek-empty" v-else>点击窥探获取角色当前状态</div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="peekSoulShow=false">关闭</button>
+          <button class="modal-btn cancel" @click="peekHistoryShow=true; $nextTick(refreshIcons)">历史</button>
+          <button class="modal-btn cancel" @click="collectPeek" v-if="peekResult">收藏</button>
+          <button class="modal-btn confirm" @click="doPeekSoul">窥探</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="dimensionMirrorShow && appReady" @click.self="dimensionMirrorShow=false">
+      <div class="modal-box">
+        <div class="modal-title">次元时境</div>
+        <div class="mirror-btns">
+          <button class="mirror-choice-btn" :class="{active: mirrorMode==='chat'}" @click="mirrorMode='chat'">聊时窥探</button>
+          <button class="mirror-choice-btn" :class="{active: mirrorMode==='idle'}" @click="mirrorMode='idle'">闲时窥镜</button>
+        </div>
+        <div class="peek-loading" v-if="mirrorLoading"><span></span><span></span><span></span></div>
+        <div class="peek-content" v-else-if="mirrorResult">{{ mirrorResult }}</div>
+        <div class="peek-empty" v-else>选择模式后点击窥镜</div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="dimensionMirrorShow=false">关闭</button>
+          <button class="modal-btn cancel" @click="mirrorHistoryShow=true; $nextTick(refreshIcons)">历史</button>
+          <button class="modal-btn cancel" @click="collectMirror" v-if="mirrorResult">收藏</button>
+          <button class="modal-btn confirm" @click="doMirror">窥镜</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="myWhisperShow && appReady" @click.self="myWhisperShow=false">
+      <div class="modal-box">
+        <div class="modal-title">我的心声</div>
+        <div class="modal-item"><label>输入你的心声</label><textarea class="modal-textarea" v-model="whisperText" placeholder="你的心声只有角色能感受到..."></textarea></div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="myWhisperShow=false">取消</button>
+          <button class="modal-btn confirm" @click="sendWhisper">发送心声</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="emojiShow && appReady" @click.self="emojiShow=false">
+      <div class="modal-box" style="max-width:420px;">
+        <div class="modal-title">表情包</div>
+        <div class="sticker-topbar">
+          <div class="sticker-tabs">
+            <button class="sticker-tab" :class="{active: stickerTab==='browse'}" @click="stickerTab='browse'">浏览</button>
+            <button class="sticker-tab" :class="{active: stickerTab==='import'}" @click="stickerTab='import'">导入</button>
+            <button class="sticker-tab" :class="{active: stickerTab==='char'}" @click="stickerTab='char'">角色表情包</button>
+            <div class="sticker-suggest-toggle" @click="stickerSuggestOn=!stickerSuggestOn; saveBeauty()">联想 <div class="toggle" :class="{on: stickerSuggestOn}" style="display:inline-block;vertical-align:middle;margin-left:4px;"></div></div>
+          </div>
+        </div>
+        <div v-if="stickerTab==='browse'">
+          <div class="sticker-cat-row">
+            <button class="sticker-cat-btn" v-for="cat in stickerData.categories" :key="cat.name" :class="{active: stickerCurrentCat===cat.name}" @click="stickerCurrentCat=cat.name">{{ cat.name }}</button>
+            <span v-if="!stickerData.categories.length" style="font-size:12px;color:#aaa;">暂无分类</span>
+          </div>
+          <div class="sticker-grid" v-if="currentCatStickers.length">
+            <div class="sticker-item" v-for="s in currentCatStickers" :key="s.name" @click="sendStickerFromPanel(s)">
+              <img :src="s.url" :alt="s.name" />
+              <div class="sticker-name">{{ s.name }}</div>
+            </div>
+          </div>
+          <div class="peek-empty" v-else>这个分类还没有表情包</div>
+          <div class="sticker-edit-row">
+            <button class="beauty-btn" @click="stickerEditMode=!stickerEditMode">{{ stickerEditMode?'退出编辑':'编辑' }}</button>
+          </div>
+          <div v-if="stickerEditMode" class="sticker-edit-panel">
+            <div class="sticker-edit-grid">
+              <div class="sticker-edit-item" v-for="s in currentCatStickers" :key="s.name">
+                <input type="checkbox" v-model="stickerSelected" :value="s.name" />
+                <img :src="s.url" :alt="s.name" style="width:40px;height:40px;object-fit:cover;" />
+                <span style="font-size:10px;">{{ s.name }}</span>
+              </div>
+            </div>
+            <div class="sticker-edit-btns">
+              <button class="beauty-btn danger" @click="deleteSelectedStickers" :disabled="!stickerSelected.length">删除选中</button>
+              <select class="modal-input" v-model="stickerMoveTarget" style="flex:1;padding:6px;"><option value="">移动到...</option><option v-for="cat in stickerData.categories" :key="cat.name" :value="cat.name">{{ cat.name }}</option></select>
+              <button class="beauty-btn" @click="moveSelectedStickers" :disabled="!stickerSelected.length||!stickerMoveTarget">移动</button>
+              <button class="beauty-btn" @click="exportSelectedStickers" :disabled="!stickerSelected.length">导出</button>
+            </div>
+          </div>
+        </div>
+        <div v-if="stickerTab==='import'">
+          <div class="modal-item"><label>选择或新建分类</label>
+            <div style="display:flex;gap:6px;"><select class="modal-input" v-model="stickerImportCat" style="flex:1;padding:8px;"><option value="">-- 选择分类 --</option><option v-for="cat in stickerData.categories" :key="cat.name" :value="cat.name">{{ cat.name }}</option></select><button class="beauty-btn" @click="stickerNewCatShow=!stickerNewCatShow">新建</button></div>
+            <div v-if="stickerNewCatShow" style="display:flex;gap:6px;margin-top:6px;"><input class="modal-input" v-model="stickerNewCatName" placeholder="新分类名称..." style="flex:1;" /><button class="beauty-btn" @click="createStickerCat">创建</button></div>
+          </div>
+          <div class="modal-item"><label>单个导入（本地）</label>
+            <div style="display:flex;gap:6px;align-items:center;"><input class="modal-input" v-model="stickerSingleName" placeholder="表情包名字..." style="flex:1;" /><button class="beauty-btn" @click="triggerStickerFile">选图</button></div>
+            <input type="file" ref="stickerFile" accept="image/*" style="display:none" @change="importStickerFile" />
+          </div>
+          <div class="modal-item"><label>单个导入（URL）</label>
+            <div style="display:flex;gap:6px;"><input class="modal-input" v-model="stickerSingleName2" placeholder="名字..." style="flex:1;" /><input class="modal-input" v-model="stickerSingleUrl" placeholder="图片URL..." style="flex:1;" /><button class="beauty-btn" @click="importStickerUrl">导入</button></div>
+          </div>
+          <div class="modal-item"><label>批量导入</label>
+            <div style="font-size:11px;color:#aaa;margin-bottom:4px;">每行格式：名字:URL 或 名字：URL</div>
+            <textarea class="modal-textarea" v-model="stickerBatchText" placeholder="开心:https://...&#10;难过：https://..."></textarea>
+            <button class="beauty-btn" style="margin-top:6px;" @click="importStickerBatch">批量导入</button>
+          </div>
+        </div>
+        <div v-if="stickerTab==='char'">
+          <div style="font-size:13px;color:#666;margin-bottom:8px;">选择允许角色使用的表情包分类。</div>
+          <div class="sticker-cat-row" style="flex-wrap:wrap;gap:8px;">
+            <div v-for="cat in stickerData.categories" :key="cat.name" class="sticker-char-cat" :class="{selected: charStickerCats.includes(cat.name)}" @click="toggleCharStickerCat(cat.name)">{{ cat.name }}<span v-if="charStickerCats.includes(cat.name)" style="margin-left:4px;">✓</span></div>
+          </div>
+          <div class="peek-empty" v-if="!stickerData.categories.length">请先导入表情包</div>
+          <button class="beauty-btn" style="margin-top:10px;" @click="saveCharStickerCats">保存设置</button>
+        </div>
+        <div class="modal-btns"><button class="modal-btn cancel" @click="emojiShow=false">关闭</button></div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="peekHistoryShow && appReady" @click.self="peekHistoryShow=false">
+      <div class="modal-box">
+        <div class="modal-title">窥探心声历史</div>
+        <div class="history-list" v-if="peekHistory.length">
+          <div class="history-item" v-for="(h,i) in peekHistory" :key="i">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div class="history-time">{{ h.time }}</div>
+              <div style="display:flex;gap:0;align-items:center;">
+                <button @click="deletePeekHistory(i)" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;padding:3px;"><i data-lucide="x" style="width:14px;height:14px;"></i></button>
+                <button @click="collectPeekHistory(h)" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;padding:3px;"><i data-lucide="bookmark" style="width:14px;height:14px;"></i></button>
+              </div>
+            </div>
+            <div class="peek-section-title">动作 / 情绪</div>
+            <div class="peek-content">{{ h.action }}</div>
+            <div class="peek-section-title" style="margin-top:6px;">内心独白</div>
+            <div class="peek-content">{{ h.soul }}</div>
+          </div>
+        </div>
+        <div class="peek-empty" v-else>暂无历史记录</div>
+        <div class="modal-btns"><button class="modal-btn cancel" @click="peekHistoryShow=false">关闭</button></div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="mirrorHistoryShow && appReady" @click.self="mirrorHistoryShow=false">
+      <div class="modal-box">
+        <div class="modal-title">次元时境历史</div>
+        <div class="history-list" v-if="mirrorHistory.length">
+          <div class="history-item" v-for="(h,i) in mirrorHistory" :key="i">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div class="history-time">{{ h.time }} · {{ h.mode==='chat'?'聊时窥探':'闲时窥镜' }}</div>
+              <div style="display:flex;gap:0;align-items:center;">
+                <button @click="deleteMirrorHistory(i)" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;padding:3px;"><i data-lucide="x" style="width:14px;height:14px;"></i></button>
+                <button @click="collectMirrorHistory(h)" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;padding:3px;"><i data-lucide="bookmark" style="width:14px;height:14px;"></i></button>
+              </div>
+            </div>
+            <div class="peek-content">{{ h.content }}</div>
+          </div>
+        </div>
+
+        <div class="peek-empty" v-else>暂无历史记录</div>
+        <div class="modal-btns"><button class="modal-btn cancel" @click="mirrorHistoryShow=false">关闭</button></div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="beautyShow && appReady" @click.self="beautyShow=false">
+      <div class="modal-box">
+        <div class="modal-title">聊天美化</div>
+
+        <div class="beauty-section">
+          <div class="beauty-section-title">聊天壁纸</div>
+          <div class="wallpaper-preview" :style="chatWallpaper ? `background-image:url(${chatWallpaper})` : ''"><span v-if="!chatWallpaper">未设置</span></div>
+          <div class="avatar-url-row" style="margin-top:8px;">
+            <input class="modal-input" v-model="chatWallpaperUrl" placeholder="粘贴壁纸URL..." />
+            <button class="modal-btn confirm" style="flex:none;padding:0 12px;min-width:52px;" @click="applyBeautyWallpaperUrl">确认</button>
+          </div>
+          <div class="beauty-btn-row">
+            <button class="beauty-btn" @click="triggerBeautyWallpaper">本地上传</button>
+            <button class="beauty-btn danger" @click="resetChatWallpaper">重置壁纸</button>
+          </div>
+          <input type="file" ref="beautyWallpaperFile" accept="image/*" style="display:none" @change="uploadBeautyWallpaper" />
+        </div>
+
+        <div class="beauty-section">
+          <div class="beauty-section-title">头像设置</div>
+          <div class="avatar-row">
+            <div class="avatar-upload-item">
+              <div class="avatar-upload-box" :style="charAvatar?`background-image:url(${charAvatar})`:''"><span v-if="!charAvatar">角色</span></div>
+              <button class="beauty-btn" @click="triggerCharAvatar">本地上传</button>
+              <div class="avatar-url-row">
+                <input class="modal-input" v-model="charAvatarUrl" placeholder="角色头像URL..." />
+                <button class="modal-btn confirm" style="flex:none;padding:0 8px;min-width:44px;font-size:12px;" @click="applyCharAvatarUrl">确认</button>
+              </div>
+              <input type="file" ref="charAvatarFile" accept="image/*" style="display:none" @change="uploadCharAvatar" />
+            </div>
+            <div class="avatar-upload-item">
+              <div class="avatar-upload-box" :style="myAvatar?`background-image:url(${myAvatar})`:''"><span v-if="!myAvatar">我</span></div>
+              <button class="beauty-btn" @click="triggerMyAvatar">本地上传</button>
+              <div class="avatar-url-row">
+                <input class="modal-input" v-model="myAvatarUrl" placeholder="我的头像URL..." />
+                <button class="modal-btn confirm" style="flex:none;padding:0 8px;min-width:44px;font-size:12px;" @click="applyMyAvatarUrl">确认</button>
+              </div>
+              <input type="file" ref="myAvatarFile" accept="image/*" style="display:none" @change="uploadMyAvatar" />
+            </div>
+          </div>
+          <div class="beauty-toggle-row">
+            <span>情侣/配套头像</span>
+            <div class="toggle" :class="{on: coupleAvatarOn}" @click="coupleAvatarOn=!coupleAvatarOn; saveBeauty()"></div>
+          </div>
+          <div v-if="coupleAvatarOn">
+            <input class="modal-input" v-model="coupleAvatarDesc" @change="saveBeauty" placeholder="描述情侣/配套头像样式..." style="margin-top:6px;" />
+          </div>
+        </div>
+
+        <div class="beauty-section">
+          <div class="beauty-section-title">聊天界面头像</div>
+          <div class="beauty-toggle-row">
+            <span>显示角色和我的头像</span>
+            <div class="toggle" :class="{on: showCharAvatar}" @click="showCharAvatar=!showCharAvatar; saveBeauty()"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后角色头像显示在气泡左侧，我的头像显示在气泡右侧</div>
+        </div>
+
+        <div class="beauty-section">
+          <div class="beauty-section-title">聊天名字</div>
+          <div class="beauty-toggle-row">
+            <span>隐藏角色和我的聊天名</span>
+            <div class="toggle" :class="{on: hideNames}" @click="hideNames=!hideNames; saveBeauty()"></div>
+          </div>
+        </div>
+        <div class="beauty-section">
+          <div class="beauty-section-title">时间戳</div>
+          <div class="beauty-toggle-row">
+            <span>显示时间戳</span>
+            <div class="toggle" :class="{on: showTimestamp}" @click="showTimestamp=!showTimestamp; saveBeauty()"></div>
+          </div>
+          <div v-if="showTimestamp" class="bubble-custom-panel">
+            <div class="beauty-field">
+              <label>时间戳格式</label>
+              <div class="ts-format-row">
+                <div class="ts-format-btn" :class="{active: tsFormat==='time'}" @click="tsFormat='time'; saveBeauty()">时:分</div>
+                <div class="ts-format-btn" :class="{active: tsFormat==='read'}" @click="tsFormat='read'; saveBeauty()">已读</div>
+                <div class="ts-format-btn" :class="{active: tsFormat==='custom'}" @click="tsFormat='custom'; saveBeauty()">自定义</div>
+              </div>
+              <input v-if="tsFormat==='custom'" class="modal-input" v-model="tsCustom" @change="saveBeauty" placeholder="输入自定义时间戳文字..." style="margin-top:6px;" />
+            </div>
+            <div class="beauty-field">
+              <label>角色时间戳位置（气泡右侧）</label>
+              <div class="ts-format-row">
+                <div class="ts-format-btn" :class="{active: tsCharPos==='top'}" @click="tsCharPos='top'; saveBeauty()">上</div>
+                <div class="ts-format-btn" :class="{active: tsCharPos==='center'}" @click="tsCharPos='center'; saveBeauty()">中</div>
+                <div class="ts-format-btn" :class="{active: tsCharPos==='bottom'}" @click="tsCharPos='bottom'; saveBeauty()">下</div>
+              </div>
+            </div>
+            <div class="beauty-field">
+              <label>我的时间戳位置（气泡左侧）</label>
+              <div class="ts-format-row">
+                <div class="ts-format-btn" :class="{active: tsMePos==='top'}" @click="tsMePos='top'; saveBeauty()">上</div>
+                <div class="ts-format-btn" :class="{active: tsMePos==='center'}" @click="tsMePos='center'; saveBeauty()">中</div>
+                <div class="ts-format-btn" :class="{active: tsMePos==='bottom'}" @click="tsMePos='bottom'; saveBeauty()">下</div>
+              </div>
+            </div>
+            <div class="beauty-field">
+              <label>时间戳字体大小 (px)</label>
+              <input class="modal-input" type="number" v-model="tsSize" min="8" max="16" @change="saveBeauty" />
+            </div>
+            <div class="beauty-field">
+              <label>角色时间戳颜色</label>
+              <div class="color-row">
+                <input type="color" :value="tsColor.startsWith('rgba')?'#888888':tsColor" @change="e=>{tsColor=e.target.value; saveBeauty()}" />
+                <input class="modal-input" v-model="tsColor" @change="saveBeauty" placeholder="rgba(0,0,0,0.3)" style="flex:1;" />
+              </div>
+            </div>
+            <div class="beauty-field">
+              <label>角色时间戳透明度 (0-1)</label>
+              <input class="modal-input" type="number" v-model="tsOpacity" min="0" max="1" step="0.1" @change="saveBeauty" />
+            </div>
+            <div class="beauty-field">
+              <label>我的时间戳颜色</label>
+              <div class="color-row">
+                <input type="color" :value="tsMeColor.startsWith('rgba')?'#888888':tsMeColor" @change="e=>{tsMeColor=e.target.value; saveBeauty()}" />
+                <input class="modal-input" v-model="tsMeColor" @change="saveBeauty" placeholder="rgba(0,0,0,0.3)" style="flex:1;" />
+              </div>
+            </div>
+            <div class="beauty-field">
+              <label>我的时间戳透明度 (0-1)</label>
+              <input class="modal-input" type="number" v-model="tsMeOpacity" min="0" max="1" step="0.1" @change="saveBeauty" />
+            </div>
+          </div>
+        </div>
+
+        <div class="beauty-section">
+          <div class="beauty-section-title">气泡样式</div>
+          <div class="beauty-toggle-row">
+            <span>自定义气泡</span>
+            <div class="toggle" :class="{on: bubbleCustomOn}" @click="bubbleCustomOn=!bubbleCustomOn; saveBeauty()"></div>
+          </div>
+          <div v-if="bubbleCustomOn" class="bubble-custom-panel">
+            <div class="beauty-field"><label>气泡字体大小 (px)</label><input class="modal-input" type="number" v-model="bubbleSize" min="10" max="24" @change="saveBeauty" /></div>
+            <div class="beauty-field"><label>气泡最大宽度 (%)</label><input class="modal-input" type="number" v-model="bubbleMaxWidth" min="40" max="95" @change="saveBeauty" /><span style="font-size:11px;color:#aaa;">控制每行显示字数，数值越小气泡越窄</span></div>
+            <div class="beauty-field"><label>角色气泡背景色</label><div class="color-row"><input type="color" v-model="charBubbleColor" @change="saveBeauty" /><span>{{ charBubbleColor }}</span></div></div>
+            <div class="beauty-field"><label>角色气泡文字色</label><div class="color-row"><input type="color" v-model="charBubbleTextColor" @change="saveBeauty" /><span>{{ charBubbleTextColor }}</span></div></div>
+            <div class="beauty-field"><label>我的气泡背景色</label><div class="color-row"><input type="color" v-model="myBubbleColor" @change="saveBeauty" /><span>{{ myBubbleColor }}</span></div></div>
+            <div class="beauty-field"><label>我的气泡文字色</label><div class="color-row"><input type="color" v-model="myBubbleTextColor" @change="saveBeauty" /><span>{{ myBubbleTextColor }}</span></div></div>
+          </div>
+        </div>
+
+        <div class="beauty-section">
+          <div class="beauty-section-title">CSS 自定义</div>
+          <div class="beauty-toggle-row">
+            <span>开启自定义 CSS</span>
+            <div class="toggle" :class="{on: cssCustomOn}" @click="cssCustomOn=!cssCustomOn; saveBeauty()"></div>
+          </div>
+          <div v-if="cssCustomOn">
+            <textarea class="modal-textarea css-input" v-model="cssCustomInput" @change="saveBeauty" placeholder="在此输入自定义CSS..."></textarea>
+            <div class="css-tip">
+              <div class="css-tip-title">常用选择器参考</div>
+              <div class="css-tip-item"><code>#chatroom-app</code> 整体聊天页面</div>
+              <div class="css-tip-item"><code>.msg-area</code> 消息滚动区域</div>
+              <div class="css-tip-item"><code>.msg-bubble</code> 所有气泡</div>
+              <div class="css-tip-item"><code>.bubble-left</code> 角色气泡</div>
+              <div class="css-tip-item"><code>.bubble-right</code> 我的气泡</div>
+              <div class="css-tip-item"><code>.bubble-whisper</code> 心声气泡</div>
+              <div class="css-tip-item"><code>.msg-sender</code> 发送者名字</div>
+              <div class="css-tip-item"><code>.input-area</code> 底部输入栏</div>
+              <div class="css-tip-item"><code>.input-wrap</code> 输入框背景</div>
+              <div class="css-tip-item"><code>.toolbar</code> 工具栏</div>
+              <div class="css-tip-item"><code>.toolbar-btn</code> 工具栏按钮</div>
+              <div class="css-tip-item"><code>.msg-quote</code> 引用条</div>
+              <div class="css-tip-item"><code>.recall-tip</code> 撤回提示</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="beautyShow=false">关闭</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+  <!-- 聊天总结弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="summaryShow && appReady" @click.self="summaryShow=false">
+      <div class="modal-box" style="max-width:420px;max-height:90vh;overflow-y:auto;">
+        <div class="modal-title">聊天总结</div>
+
+        <div style="display:flex;gap:8px;">
+          <div class="summary-pos-btn" :class="{active: summaryTab==='normal'}" @click="summaryTab='normal'">普通总结</div>
+          <div class="summary-pos-btn" :class="{active: summaryTab==='weighted'}" @click="summaryTab='weighted'">权重总结</div>
+        </div>
+
+        <div v-if="summaryTab==='normal'" style="display:flex;flex-direction:column;gap:14px;">
+
+          <div class="summary-info-row">
+            <span>共 {{ allMessages.filter(m=>!m.recalled&&!m.loading).length }} 条消息</span>
+          </div>
+
+          <!-- 总结提示词设置 -->
+          <div style="border:1.5px solid #e5e5ea;border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
+            <span style="font-size:13px;font-weight:600;color:#333;">总结提示词</span>
+            <textarea class="modal-textarea" v-model="summaryPrompt" style="min-height:80px;" placeholder="描述总结风格，例如：以第一人称日记风格总结，语气温柔细腻...留空则使用默认提示词"></textarea>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input class="modal-input" v-model="summaryPromptSaveName" placeholder="存档名称（可选）" style="flex:1;" />
+              <button class="modal-btn cancel" style="flex:none;padding:0 14px;height:40px;font-size:13px;" @click="saveSummaryPromptPreset">存档</button>
+              <button class="modal-btn cancel" style="flex:none;padding:0 14px;height:40px;font-size:13px;color:#e53e3e;" v-if="summaryPrompt" @click="summaryPrompt=''">清空</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px;max-height:160px;overflow-y:auto;background:#f9f9f9;border-radius:10px;padding:8px;">
+              <div style="font-size:11px;color:#aaa;font-weight:700;margin-bottom:2px;">已保存预设</div>
+              <div v-for="(p,i) in defaultSummaryPrompts" :key="'d'+i" style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #eee;">
+                <span style="flex:1;font-size:12px;color:#333;cursor:pointer;" @click="summaryPrompt=p.prompt">{{ p.name }}</span>
+              </div>
+              <div v-for="(p,i) in summaryPromptPresets" :key="'u'+i" style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #eee;">
+                <span style="flex:1;font-size:12px;color:#333;cursor:pointer;" @click="summaryPrompt=p.prompt">{{ p.name }}</span>
+                <button style="background:transparent;border:none;color:#e53e3e;cursor:pointer;font-size:11px;" @click="deleteSummaryPromptPreset(i)">删除</button>
+              </div>
+            </div>
+            <div style="font-size:11px;color:#aaa;">留空使用默认提示词</div>
+          </div>
+
+          <div class="modal-item">
+            <label>选择消息范围</label>
+            <div class="summary-range-row">
+              <span style="font-size:13px;color:#555;">第</span>
+              <input class="modal-input" type="number" v-model="summaryFrom" :min="1" :max="allMessages.filter(m=>!m.recalled&&!m.loading).length" style="width:70px;text-align:center;" />
+              <span style="font-size:13px;color:#555;">条 到 第</span>
+              <input class="modal-input" type="number" v-model="summaryTo" :min="summaryFrom" :max="allMessages.filter(m=>!m.recalled&&!m.loading).length" style="width:70px;text-align:center;" />
+              <span style="font-size:13px;color:#555;">条</span>
+            </div>
+          </div>
+
+          <!-- 预览选中消息 -->
+          <div style="max-height:160px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:10px;padding:6px;" v-if="summaryPreviewMsgs.length">
+            <div v-for="(m,i) in summaryPreviewMsgs" :key="i"
+              style="display:flex;align-items:flex-start;gap:6px;padding:6px 4px;border-bottom:1px solid #f5f5f5;min-height:32px;flex-shrink:0;">
+              <span style="font-size:11px;font-weight:600;color:#888;flex-shrink:0;padding-top:1px;">{{ m.role==='user'?myName:charName }}：</span>
+              <span style="font-size:12px;color:#555;line-height:1.5;word-break:break-all;">{{ m.content.slice(0,50) }}{{ m.content.length>50?'...':'' }}</span>
+            </div>
+          </div>
+
+          <!-- 总结结果 -->
+          <div class="modal-item" v-if="summaryResult!==null">
+            <label>总结回忆（可编辑）</label>
+            <textarea class="modal-textarea" v-model="summaryResult" style="min-height:100px;"></textarea>
+          </div>
+
+          <div class="peek-loading" v-if="summaryLoading"><span></span><span></span><span></span></div>
+
+          <!-- 插入位置 -->
+          <div class="modal-item" v-if="summaryResult!==null && !summaryLoading">
+            <label>插入位置</label>
+            <div class="summary-pos-row">
+              <div class="summary-pos-btn" :class="{active: summaryPos==='before_history'}" @click="summaryPos='before_history'">消息历史前</div>
+              <div class="summary-pos-btn" :class="{active: summaryPos==='after_system'}" @click="summaryPos='after_system'">系统提示词后</div>
+            </div>
+          </div>
+
+          <div class="beauty-section">
+            <div class="beauty-section-title">自动总结</div>
+            <div class="beauty-toggle-row">
+              <span>开启自动总结</span>
+              <div class="toggle" :class="{on: autoSummaryOn}" @click="autoSummaryOn=!autoSummaryOn"></div>
+            </div>
+            <div v-if="autoSummaryOn" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+              <div class="beauty-field">
+                <label>每达到多少条消息自动总结</label>
+                <input class="modal-input" type="number" v-model="autoSummaryCount" min="5" max="200" placeholder="默认20条" />
+              </div>
+              <div class="beauty-toggle-row">
+                <span>每次询问插入位置</span>
+                <div class="toggle" :class="{on: autoSummaryAskPos}" @click="autoSummaryAskPos=!autoSummaryAskPos"></div>
+              </div>
+              <div v-if="!autoSummaryAskPos">
+                <label style="font-size:12px;color:#777;">默认插入位置</label>
+                <div class="summary-pos-row" style="margin-top:4px;">
+                  <div class="summary-pos-btn" :class="{active: autoSummaryDefaultPos==='before_history'}" @click="autoSummaryDefaultPos='before_history'">消息历史前</div>
+                  <div class="summary-pos-btn" :class="{active: autoSummaryDefaultPos==='after_system'}" @click="autoSummaryDefaultPos='after_system'">系统提示词后</div>
+                </div>
+              </div>
+              <button class="modal-btn confirm" @click="saveAutoSummarySettings">保存自动总结设置</button>
+            </div>
+          </div>
+
+          <!-- 自动插入开关 -->
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#555;">
+            <span>生成后自动插入</span>
+            <div class="toggle" :class="{on: summaryAutoInsert}" @click="summaryAutoInsert=!summaryAutoInsert"></div>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:-8px;">开启后生成完成自动按所选位置插入，无需手动点插入</div>
+
+          <div class="modal-btns">
+            <button class="modal-btn cancel" @click="summaryShow=false">关闭</button>
+            <button class="modal-btn cancel" @click="doSummary" :disabled="summaryLoading">总结</button>
+            <button class="modal-btn cancel" v-if="summaryResult!==null && !summaryLoading" @click="collectSummary">收藏</button>
+            <button class="modal-btn confirm" v-if="summaryResult!==null && !summaryLoading && !summaryAutoInsert" @click="applySummary">插入</button>
+          </div>
+
+        </div>
+
+        <!-- 权重总结 tab -->
+        <div v-if="summaryTab==='weighted'" style="display:flex;flex-direction:column;gap:10px;">
+
+          <div class="summary-info-row">
+            <span>共 {{ allMessages.filter(m=>!m.recalled&&!m.loading).length }} 条消息</span>
+          </div>
+
+          <div class="modal-item">
+            <label>选择消息范围</label>
+            <div class="summary-range-row">
+              <span style="font-size:13px;color:#555;">第</span>
+              <input class="modal-input" type="number" v-model="summaryFrom" :min="1" :max="allMessages.filter(m=>!m.recalled&&!m.loading).length" style="width:70px;text-align:center;" />
+              <span style="font-size:13px;color:#555;">条 到 第</span>
+              <input class="modal-input" type="number" v-model="summaryTo" :min="summaryFrom" :max="allMessages.filter(m=>!m.recalled&&!m.loading).length" style="width:70px;text-align:center;" />
+              <span style="font-size:13px;color:#555;">条</span>
+            </div>
+          </div>
+
+          <div style="font-size:12px;color:#aaa;line-height:1.6;">AI会将对话拆分为多个记忆片段并打分（0-1），评分越高越重要。插入后AI会优先参考高权重记忆。</div>
+
+          <div class="peek-loading" v-if="weightedSummaryLoading"><span></span><span></span><span></span></div>
+
+          <!-- 结果列表 -->
+          <div v-if="weightedSummaryResult.length" style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto;">
+            <div v-for="(item,i) in weightedSummaryResult" :key="i"
+              style="display:flex;flex-direction:column;gap:4px;border-radius:10px;overflow:hidden;background:#f9f9f9;">
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;"
+                :style="`border-left:4px solid rgba(17,17,17,${item.score});`"
+                @click="item.expanded=!item.expanded">
+                <span style="font-size:13px;font-weight:700;color:#111;flex-shrink:0;min-width:36px;">{{ parseFloat(item.score).toFixed(2) }}</span>
+                <span style="flex:1;font-size:12px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ item.content }}</span>
+                <button @click.stop="deleteWeightedItem(i)" style="background:transparent;border:none;color:#ccc;cursor:pointer;font-size:14px;flex-shrink:0;">×</button>
+              </div>
+              <div v-if="item.expanded" style="padding:0 10px 10px;display:flex;flex-direction:column;gap:6px;">
+                <div style="font-size:12px;color:#555;line-height:1.6;white-space:pre-wrap;">{{ item.content }}</div>
+                <div style="font-size:11px;color:#aaa;">理由：{{ item.reason }}</div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="font-size:11px;color:#555;">调整评分：</span>
+                  <button @click="adjustWeightedScore(i,-0.05)" style="width:28px;height:28px;border-radius:6px;border:1.5px solid #e5e5ea;background:#fff;cursor:pointer;font-size:14px;">-</button>
+                  <span style="font-size:13px;font-weight:700;color:#111;min-width:36px;text-align:center;">{{ parseFloat(item.score).toFixed(2) }}</span>
+                  <button @click="adjustWeightedScore(i,0.05)" style="width:28px;height:28px;border-radius:6px;border:1.5px solid #e5e5ea;background:#fff;cursor:pointer;font-size:14px;">+</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="!weightedSummaryLoading && !weightedSummaryResult.length" class="peek-empty">选择消息范围后点击生成</div>
+
+          <div v-if="weightedSummaryResult.length && !weightedSummaryLoading" class="modal-item">
+            <label>插入位置</label>
+            <div class="summary-pos-row">
+              <div class="summary-pos-btn" :class="{active: weightedSummaryPos==='before_history'}" @click="weightedSummaryPos='before_history'">消息历史前</div>
+              <div class="summary-pos-btn" :class="{active: weightedSummaryPos==='after_system'}" @click="weightedSummaryPos='after_system'">系统提示词后</div>
+            </div>
+          </div>
+
+          <!-- 自动插入开关 -->
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#555;">
+            <span>生成后自动插入</span>
+            <div class="toggle" :class="{on: weightedSummaryAutoInsert}" @click="weightedSummaryAutoInsert=!weightedSummaryAutoInsert"></div>
+          </div>
+
+          <!-- 权重自动总结 -->
+          <div class="beauty-section">
+            <div class="beauty-section-title">自动总结</div>
+            <div class="beauty-toggle-row">
+              <span>开启权重自动总结</span>
+              <div class="toggle" :class="{on: weightedAutoSummaryOn}" @click="weightedAutoSummaryOn=!weightedAutoSummaryOn"></div>
+            </div>
+            <div v-if="weightedAutoSummaryOn" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+              <div class="beauty-field">
+                <label>每达到多少条消息自动总结</label>
+                <input class="modal-input" type="number" v-model="weightedAutoSummaryCount" min="5" max="200" placeholder="默认20条" />
+              </div>
+              <div class="beauty-field">
+                <label>默认插入位置</label>
+                <div class="summary-pos-row" style="margin-top:4px;">
+                  <div class="summary-pos-btn" :class="{active: weightedAutoSummaryDefaultPos==='before_history'}" @click="weightedAutoSummaryDefaultPos='before_history'">消息历史前</div>
+                  <div class="summary-pos-btn" :class="{active: weightedAutoSummaryDefaultPos==='after_system'}" @click="weightedAutoSummaryDefaultPos='after_system'">系统提示词后</div>
+                </div>
+              </div>
+              <button class="modal-btn confirm" @click="saveWeightedAutoSummarySettings">保存设置</button>
+            </div>
+          </div>
+
+          <div class="modal-btns">
+            <button class="modal-btn cancel" @click="summaryShow=false">关闭</button>
+            <button class="modal-btn cancel" @click="doWeightedSummary" :disabled="weightedSummaryLoading">生成</button>
+            <button class="modal-btn confirm" v-if="weightedSummaryResult.length && !weightedSummaryLoading && !weightedSummaryAutoInsert" @click="applyWeightedSummary">插入</button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <transition name="modal">
+    <div class="modal-mask" v-if="autoSummaryPosShow && appReady">
+      <div class="modal-box" style="max-width:320px;">
+        <div class="modal-title">自动总结完成</div>
+        <div style="font-size:13px;color:#666;text-align:center;margin-bottom:8px;">第 {{ pendingAutoSummaryFrom }} - {{ pendingAutoSummaryTo }} 条消息已总结，请选择插入位置</div>
+        <div class="summary-pos-row">
+          <div class="summary-pos-btn active" @click="confirmAutoSummaryPos('before_history')">消息历史前</div>
+          <div class="summary-pos-btn active" @click="confirmAutoSummaryPos('after_system')">系统提示词后</div>
+        </div>
+      </div>
+    </div>
+  </transition>
+  <transition name="modal">
+    <div class="modal-mask" v-if="blockShow && appReady" @click.self="blockShow=false">
+      <div class="modal-box" style="max-width:300px;">
+        <div class="modal-title">{{ isBlocked ? '已拉黑' : '拉黑' }}</div>
+        <div v-if="!isBlocked">
+          <div style="font-size:14px;color:#555;text-align:center;padding:8px 0;">是否要拉黑「{{ charName }}」？<br/><span style="font-size:12px;color:#aaa;">拉黑后对方会知道被拉黑</span></div>
+          <div class="modal-btns">
+            <button class="modal-btn cancel" @click="blockShow=false">否，取消</button>
+            <button class="modal-btn" style="background:#e53e3e;color:#fff;" @click="confirmBlock">是，拉黑</button>
+          </div>
+        </div>
+        <div v-else>
+          <div style="font-size:14px;color:#555;text-align:center;padding:8px 0;">「{{ charName }}」已被拉黑<br/><span style="font-size:12px;color:#aaa;">解除后对方会知道被重新添加</span></div>
+          <div class="modal-btns">
+            <button class="modal-btn cancel" @click="blockShow=false">取消</button>
+            <button class="modal-btn confirm" @click="confirmUnblock">解除拉黑</button>
+          </div>
+        </div>
+        <div v-if="iBlockedByChar" style="margin-top:8px;padding:10px 12px;background:#fff0f0;border-radius:10px;font-size:13px;color:#e53e3e;text-align:center;">
+          你已被「{{ charName }}」拉黑<br/><span style="font-size:11px;color:#aaa;">角色可以自行解除对你的拉黑</span>
+        </div>
+
+      </div>
+    </div>
+  </transition>
+  <!-- 拆分消息弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="splitShow && appReady" @click.self="splitShow=false">
+      <div class="modal-box">
+        <div class="modal-title">拆分消息</div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:4px;">每行将变成一条单独的消息，空行会被忽略</div>
+        <textarea class="modal-textarea" v-model="splitContent" style="min-height:140px;font-family:inherit;" placeholder="每行一条消息..."></textarea>
+        <div style="font-size:11px;color:#aaa;">将拆分为 {{ splitPreviewCount }} 条消息</div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="splitShow=false">取消</button>
+          <button class="modal-btn confirm" @click="confirmSplit">确认拆分</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- 插入角色消息弹窗 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="insertShow && appReady" @click.self="insertShow=false">
+      <div class="modal-box">
+        <div class="modal-title">在此后插入角色消息</div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:4px;">每行将插入为一条单独的角色消息</div>
+        <textarea class="modal-textarea" v-model="insertContent" style="min-height:140px;font-family:inherit;" placeholder="每行一条消息..."></textarea>
+        <div style="font-size:11px;color:#aaa;">将插入 {{ insertPreviewCount }} 条消息</div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="insertShow=false">取消</button>
+          <button class="modal-btn confirm" @click="confirmInsert">确认插入</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+  <transition name="modal">
+    <div class="modal-mask" v-if="deleteCharShow && appReady" @click.self="deleteCharShow=false">
+      <div class="modal-box" style="max-width:300px;">
+        <div class="modal-title">删除角色</div>
+        <div style="font-size:14px;color:#555;text-align:center;padding:8px 0;">确定要删除「{{ charName }}」吗？<br/><span style="font-size:12px;color:#e53e3e;">所有聊天记录将被永久删除</span></div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="deleteCharShow=false">否，取消</button>
+          <button class="modal-btn" style="background:#e53e3e;color:#fff;" @click="confirmDeleteChar">是，删除</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+<!-- 角色世界设置弹窗 -->
+<transition name="modal">
+  <div class="modal-mask" v-if="charWorldSettingShow && appReady" @click.self="charWorldSettingShow=false">
+    <div class="modal-box" style="max-width:420px;">
+      <div class="modal-title">角色世界设置</div>
+      <!-- 手动设置 -->
+      <div v-if="charWorldAiResult===''" style="font-size:11px;font-weight:700;color:#aaa;letter-spacing:0.5px;margin-top:4px;">手动设置</div>
+
+      <!-- 解锁方式选择 -->
+      <div class="modal-item" v-if="charWorldAiResult===''">
+        <label>解锁方式</label>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div v-for="opt in charWorldLockOptions" :key="opt.value"
+            style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:1.5px solid #e5e5ea;cursor:pointer;transition:all 0.15s;"
+            :style="charWorldLockType===opt.value ? 'border-color:#111;background:#f5f5f5;' : ''"
+            @click="charWorldLockType=opt.value">
+            <i :data-lucide="opt.icon" style="width:16px;height:16px;color:#555;flex-shrink:0;"></i>
+            <div style="flex:1;">
+              <div style="font-size:13px;font-weight:500;color:#333;">{{ opt.label }}</div>
+              <div style="font-size:11px;color:#aaa;margin-top:2px;">{{ opt.desc }}</div>
+            </div>
+            <div style="width:18px;height:18px;border-radius:50%;border:2px solid #ccc;display:flex;align-items:center;justify-content:center;flex-shrink:0;"
+              :style="charWorldLockType===opt.value ? 'background:#111;border-color:#111;' : ''">
+              <span v-if="charWorldLockType===opt.value" style="color:#fff;font-size:11px;">✓</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 图案解锁设置 -->
+      <div v-if="charWorldLockType==='pattern' && charWorldAiResult===''" class="modal-item">
+        <label>绘制解锁图案</label>
+        <div style="font-size:11px;color:#aaa;margin-bottom:8px;">按住并滑动手指经过圆点来绘制图案，至少连接4个点</div>
+        <div style="position:relative;width:210px;height:210px;margin:0 auto;user-select:none;"
+          @mousedown="patternStart($event)"
+          @mousemove="patternMove($event)"
+          @mouseup="patternEnd"
+          @mouseleave="patternEnd"
+          @touchstart.prevent="patternStart($event)"
+          @touchmove.prevent="patternMove($event)"
+          @touchend="patternEnd">
+          <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;" ref="patternSvg">
+            <polyline v-if="patternLines.length" :points="patternLines" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <line v-if="patternDrawing && patternCurrentPos" :x1="patternLines.split(' ').slice(-1)[0]?.split(',')[0]" :y1="patternLines.split(' ').slice(-1)[0]?.split(',')[1]" :x2="patternCurrentPos.x" :y2="patternCurrentPos.y" stroke="#aaa" stroke-width="2" stroke-dasharray="4"/>
+          </svg>
+          <div v-for="(pos, idx) in patternDotPositions" :key="idx"
+            style="position:absolute;width:44px;height:44px;border-radius:50%;border:2px solid #e5e5ea;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;transition:all 0.1s;background:#f9f9f9;"
+            :style="{ left: pos.x-22+'px', top: pos.y-22+'px', background: charWorldPattern.includes(idx+1)?'#111':'#f9f9f9', borderColor: charWorldPattern.includes(idx+1)?'#111':'#e5e5ea', color: charWorldPattern.includes(idx+1)?'#fff':'#ccc' }">
+            {{ charWorldPattern.includes(idx+1) ? charWorldPattern.indexOf(idx+1)+1 : '' }}
+          </div>
+        </div>
+        <div style="font-size:11px;color:#aaa;text-align:center;margin-top:8px;">{{ charWorldPattern.length >= 4 ? '已连接 '+charWorldPattern.length+' 个点' : '已连接 '+charWorldPattern.length+' 个点，至少需要4个' }}</div>
+        <button class="modal-btn cancel" style="margin-top:6px;font-size:12px;padding:8px;" @click="charWorldPattern=[];patternLines=''">清除图案</button>
+      </div>
+
+      <!-- 数字密码设置 -->
+      <div v-if="charWorldLockType==='pin' && charWorldAiResult===''" class="modal-item">
+        <label>设置数字密码（4-6位）</label>
+        <input class="modal-input" type="password" inputmode="numeric" v-model="charWorldPin" maxlength="6" placeholder="输入4-6位数字密码..." />
+      </div>
+
+      <!-- 问题解锁设置 -->
+        <div v-if="charWorldLockType==='question' && charWorldAiResult===''" class="modal-item">
+          <label>解锁问题</label>
+          <input class="modal-input" v-model="charWorldQuestion" placeholder="输入问题，例如：我最喜欢的食物是？" />
+          <label style="margin-top:8px;">答案</label>
+          <input class="modal-input" type="password" v-model="charWorldAnswer" placeholder="输入答案..." />
+        </div>
+
+      <!-- 让角色自己决定解锁方式和密码 -->
+      <div class="modal-item">
+        <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">让角色自己决定</div>
+        <div style="font-size:11px;color:#aaa;margin-bottom:8px;">调用AI，让角色根据自己的性格选择解锁方式并设置密码，密码会注入角色记忆，角色知道自己的密码</div>
+        <div class="peek-loading" v-if="charWorldAiLoading"><span></span><span></span><span></span></div>
+        <div v-if="!charWorldAiLoading && charWorldAiResult==='done'" style="display:flex;flex-direction:column;gap:8px;background:#f9f9f9;border-radius:10px;padding:10px 12px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:13px;color:#333;flex:1;">角色已设好密码，试着猜猜看~</span>
+            <button v-if="!charWorldShowPassword && !charWorldConfirmShow" @click="charWorldConfirmShow=true" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;gap:4px;padding:4px;font-size:12px;">
+              <i data-lucide="key" style="width:14px;height:14px;"></i>
+              查看密码
+            </button>
+            <button v-if="charWorldShowPassword" @click="charWorldShowPassword=false; charWorldConfirmShow=false" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;gap:4px;padding:4px;font-size:12px;">
+              <i data-lucide="eye-off" style="width:14px;height:14px;"></i>
+              隐藏
+            </button>
+          </div>
+          <div v-if="charWorldConfirmShow && !charWorldShowPassword" style="background:#fff8e7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:8px;font-size:12px;color:#555;">
+            <span style="flex:1;">确定要查看角色密码吗？</span>
+            <button @click="charWorldShowPassword=true; charWorldConfirmShow=false" style="padding:4px 10px;border-radius:6px;border:none;background:#111;color:#fff;font-size:11px;cursor:pointer;">查看</button>
+            <button @click="charWorldConfirmShow=false" style="padding:4px 10px;border-radius:6px;border:none;background:#f2f2f7;color:#555;font-size:11px;cursor:pointer;">取消</button>
+          </div>
+          <div v-if="charWorldShowPassword" style="font-size:12px;color:#e53e3e;padding:8px 10px;background:#fff0f0;border-radius:8px;line-height:1.8;">
+            <span v-if="charWorldLockType==='pin'">数字密码：{{ charWorldPin }}</span>
+            <span v-else-if="charWorldLockType==='pattern'">图案序列：{{ charWorldPattern.join('-') }}</span>
+            <div v-else-if="charWorldLockType==='question'">
+              <div>问题：{{ charWorldQuestion }}</div>
+              <div>答案：{{ charWorldAnswer }}</div>
+            </div>
+          </div>
+        </div>
+        <button v-if="!charWorldAiLoading" class="modal-btn cancel" style="font-size:13px;padding:10px;" @click="charWorldShowPassword=false; charWorldAiResult=''; aiSetCharWorldLock()">
+          {{ charWorldAiResult==='done' ? '重新让角色设置' : '让角色自己设置密码' }}
+        </button>
+      </div>
+
+      <!-- 金手指开关 -->
+      <div class="beauty-section">
+        <div class="beauty-toggle-row">
+          <span style="font-size:13px;">允许金手指强制解锁</span>
+          <div class="toggle" :class="{on: charWorldGoldenFinger}" @click="charWorldGoldenFinger=!charWorldGoldenFinger"></div>
+        </div>
+        <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后解锁界面右下角有隐藏按钮，点击可强制进入</div>
+      </div>
+
+      <!-- 密码提示 -->
+      <div class="modal-item">
+        <div style="font-size:13px;font-weight:600;color:#333;margin-bottom:4px;">密码提示</div>
+        <div style="font-size:11px;color:#aaa;margin-bottom:8px;">输错密码时会显示此提示，提示不能和密码相同</div>
+
+        <!-- AI设置和手动输入 -->
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button class="modal-btn cancel" style="flex:1;font-size:12px;padding:8px;" @click="aiSetCharWorldHint" :disabled="charWorldAiLoading">
+            {{ charWorldAiLoading ? '生成中...' : '让角色设置提示' }}
+          </button>
+        </div>
+        <div class="peek-loading" v-if="charWorldAiLoading" style="justify-content:flex-start;padding:2px 0;"><span></span><span></span><span></span></div>
+        <input class="modal-input" v-model="charWorldHint" placeholder="或手动输入密码提示..." />
+
+        <!-- 已有提示则显示查看按钮 -->
+        <div v-if="charWorldHint" style="margin-top:8px;background:#f9f9f9;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:13px;color:#333;flex:1;">已设置密码提示</span>
+            <button v-if="!charWorldShowHint && !charWorldHintConfirmShow" @click="charWorldHintConfirmShow=true" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;gap:4px;padding:4px;font-size:12px;">
+              <i data-lucide="eye" style="width:14px;height:14px;"></i>
+              查看提示
+            </button>
+            <button v-if="charWorldShowHint" @click="charWorldShowHint=false; charWorldHintConfirmShow=false" style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;gap:4px;padding:4px;font-size:12px;">
+              <i data-lucide="eye-off" style="width:14px;height:14px;"></i>
+              隐藏
+            </button>
+          </div>
+          <div v-if="charWorldHintConfirmShow && !charWorldShowHint" style="background:#fff8e7;border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:8px;font-size:12px;color:#555;">
+            <span style="flex:1;">确定要查看密码提示吗？</span>
+            <button @click="charWorldShowHint=true; charWorldHintConfirmShow=false" style="padding:4px 10px;border-radius:6px;border:none;background:#111;color:#fff;font-size:11px;cursor:pointer;">查看</button>
+            <button @click="charWorldHintConfirmShow=false" style="padding:4px 10px;border-radius:6px;border:none;background:#f2f2f7;color:#555;font-size:11px;cursor:pointer;">取消</button>
+          </div>
+          <div v-if="charWorldShowHint" style="font-size:12px;color:#e53e3e;padding:6px 8px;background:#fff0f0;border-radius:8px;">{{ charWorldHint }}</div>
+        </div>
+      </div>
+
+      <div class="modal-btns">
+        <button class="modal-btn cancel" @click="charWorldSettingShow=false">取消</button>
+        <button class="modal-btn confirm" @click="saveCharWorldSetting">保存</button>
+      </div>
+    </div>
+  </div>
+</transition>
+
+<!-- 次元剧场主弹窗 -->
+<transition name="modal">
+  <div class="modal-mask" v-if="theaterShow && appReady" @click.self="theaterShow=false">
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-title">次元剧场</div>
+
+      <!-- Tab 切换 -->
+      <div style="display:flex;gap:8px;">
+        <div class="summary-pos-btn" :class="{active: theaterTab==='text'}" @click="theaterTab='text'">纯文字剧场</div>
+        <div class="summary-pos-btn" :class="{active: theaterTab==='html'}" @click="theaterTab='html'">HTML剧场</div>
+        <div class="summary-pos-btn" :class="{active: theaterTab==='history'}" @click="theaterTab='history'">历史记录</div>
+      </div>
+<!-- 文风设置（仅在文字/HTML tab显示，不折叠） -->
+<div v-if="theaterTab!=='history'" style="border:1.5px solid #e5e5ea;border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
+  <span style="font-size:13px;font-weight:600;color:#333;">文风设置</span>
+  <textarea class="modal-textarea" v-model="theaterStylePrompt" style="min-height:80px;" placeholder="描述文风要求，例如：文笔细腻深情，大量景色描写，以第三人称旁观视角叙述..."></textarea>
+  <div style="display:flex;gap:6px;align-items:center;">
+    <input class="modal-input" v-model="theaterStyleSaveName" placeholder="文风预设名称..." style="flex:1;" />
+    <button class="modal-btn cancel" style="flex:none;padding:0 14px;height:36px;font-size:12px;" @click="saveTheaterStylePreset">存档</button>
+    <button class="modal-btn cancel" style="flex:none;padding:0 14px;height:36px;font-size:12px;color:#e53e3e;" v-if="theaterStylePrompt" @click="theaterStylePrompt=''">清空</button>
+  </div>
+  <div v-if="theaterStylePresets.length" style="display:flex;flex-direction:column;gap:4px;max-height:100px;overflow-y:auto;background:#f2f2f7;border-radius:8px;padding:6px 8px;">
+    <div style="font-size:10px;color:#aaa;font-weight:700;margin-bottom:2px;">已保存文风预设</div>
+    <div v-for="(p,i) in theaterStylePresets" :key="i" style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #e8e8e8;">
+      <span style="flex:1;font-size:12px;color:#333;cursor:pointer;" @click="theaterStylePrompt=p.prompt">{{ p.name }}</span>
+      <button style="background:transparent;border:none;color:#e53e3e;cursor:pointer;font-size:11px;" @click="deleteTheaterStylePreset(i)">删除</button>
+    </div>
+  </div>
+  <div style="font-size:11px;color:#aaa;">文风设置对文字剧场和HTML剧场均生效。</div>
+</div>
+
+
+      <!-- 纯文字剧场 -->
+      <div v-if="theaterTab==='text'" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="modal-item">
+          <label>剧场提示词</label>
+          <textarea class="modal-textarea" v-model="theaterTextPrompt" style="min-height:120px;" placeholder="例：生成一个以「当角色和我...」为主题的番外。内容不少于xxxx字"></textarea>
+        <div v-pre style="font-size:10px;color:#bbb;margin-top:3px;">{{char}} 或 &lt;char&gt; 或 char 自动替换为角色真名，{{user}} 或 &lt;user&gt; 或 user 自动替换为我的名字</div>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="modal-input" v-model="theaterSaveName" placeholder="存档名称（可选）" style="flex:1;" />
+          <button class="modal-btn cancel" style="flex:none;padding:0 14px;height:40px;font-size:13px;" @click="saveTheaterPreset">存档</button>
+        </div>
+        <!-- 已保存预设 -->
+        <div v-if="theaterPresets.length" style="display:flex;flex-direction:column;gap:4px;max-height:120px;overflow-y:auto;background:#f9f9f9;border-radius:10px;padding:8px;">
+          <div style="font-size:11px;color:#aaa;font-weight:700;margin-bottom:2px;">已保存预设</div>
+          <div v-for="(p,i) in theaterPresets" :key="i" style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #eee;">
+            <span style="flex:1;font-size:12px;color:#333;cursor:pointer;" @click="theaterTextPrompt=replaceTheaterVars(p.prompt)">{{ p.name }}</span>
+            <button style="background:transparent;border:none;color:#e53e3e;cursor:pointer;font-size:11px;" @click="deleteTheaterPreset(i)">删除</button>
+          </div>
+        </div>
+        <div class="peek-loading" v-if="theaterLoading"><span></span><span></span><span></span></div>
+        <div v-if="theaterTextResult" style="background:#f9f9f9;border-radius:10px;padding:12px;font-size:13px;color:#333;line-height:1.8;max-height:300px;overflow-y:auto;white-space:pre-wrap;position:relative;">
+  {{ theaterTextResult }}
+  <button @click="collectTheater(theaterTextResult)" style="position:absolute;top:8px;right:8px;background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;padding:3px;" title="收藏">
+    <i data-lucide="bookmark" style="width:14px;height:14px;"></i>
+  </button>
+</div>
+<!-- 角色评论区 -->
+<div v-if="theaterTextResult" style="display:flex;flex-direction:column;gap:6px;">
+  <div style="display:flex;align-items:center;gap:8px;">
+    <span style="font-size:11px;font-weight:700;color:#aaa;letter-spacing:0.5px;">角色评论</span>
+    <button class="modal-btn cancel" style="flex:none;padding:4px 12px;font-size:11px;border-radius:20px;" @click="runTheaterComment" :disabled="theaterCommentLoading">
+      {{ theaterCommentLoading ? '生成中...' : ('让'+charName+'评论这段剧场') }}
+    </button>
+  </div>
+  <div class="peek-loading" v-if="theaterCommentLoading"><span></span><span></span><span></span></div>
+  <div v-if="theaterCommentResult" style="background:#fff;border-left:3px solid #111;border-radius:0 10px 10px 0;padding:10px 12px;font-size:13px;color:#333;line-height:1.7;white-space:pre-wrap;">{{ theaterCommentResult }}</div>
+</div>
+<div class="modal-btns">
+  <button class="modal-btn cancel" @click="theaterShow=false">关闭</button>
+
+          <button class="modal-btn cancel" @click="theaterTab='history'" v-if="theaterTextResult">查看历史</button>
+          <button class="modal-btn confirm" @click="runTextTheater" :disabled="theaterLoading">生成剧场</button>
+        </div>
+      </div>
+
+      <!-- HTML剧场 -->
+      <div v-if="theaterTab==='html'" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="modal-item">
+          <label>HTML剧场提示词</label>
+          <textarea class="modal-textarea" v-model="theaterHtmlPrompt" style="min-height:120px;" placeholder="输入提示词，将生成HTML内容并在弹窗内展示..."></textarea>
+        <div v-pre style="font-size:10px;color:#bbb;margin-top:3px;">{{char}} 或 &lt;char&gt; 或 char 自动替换为角色真名，{{user}} 或 &lt;user&gt; 或 user 自动替换为我的名字</div>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="modal-input" v-model="theaterHtmlSaveName" placeholder="存档名称（可选）" style="flex:1;" />
+          <button class="modal-btn cancel" style="flex:none;padding:0 14px;height:40px;font-size:13px;" @click="saveTheaterHtmlPreset">存档</button>
+        </div>
+        <!-- 已保存HTML预设 -->
+        <div v-if="theaterHtmlPresets.length" style="display:flex;flex-direction:column;gap:4px;max-height:120px;overflow-y:auto;background:#f9f9f9;border-radius:10px;padding:8px;">
+          <div style="font-size:11px;color:#aaa;font-weight:700;margin-bottom:2px;">已保存预设</div>
+          <div v-for="(p,i) in theaterHtmlPresets" :key="i" style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #eee;">
+            <span style="flex:1;font-size:12px;color:#333;cursor:pointer;" @click="theaterHtmlPrompt=replaceTheaterVars(p.prompt)">{{ p.name }}</span>
+            <button style="background:transparent;border:none;color:#e53e3e;cursor:pointer;font-size:11px;" @click="deleteTheaterHtmlPreset(i)">删除</button>
+          </div>
+        </div>
+        <div class="peek-loading" v-if="theaterLoading"><span></span><span></span><span></span></div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="theaterShow=false">关闭</button>
+          <button class="modal-btn cancel" @click="theaterTab='history'" v-if="theaterHtmlResult">查看历史</button>
+          <button class="modal-btn confirm" @click="runHtmlTheater" :disabled="theaterLoading">生成剧场</button>
+        </div>
+      </div>
+
+<!-- 历史记录 -->
+<div v-if="theaterTab==='history'" style="display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto;">
+  <div v-if="!theaterHistory.length" class="peek-empty">暂无历史记录</div>
+  <div v-for="(h,i) in theaterHistory.slice().reverse()" :key="i" style="background:#f9f9f9;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:11px;color:#aaa;">{{ h.time }} · {{ h.type==='html'?'HTML剧场':'文字剧场' }}</span>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button class="modal-btn cancel" style="flex:none;padding:4px 10px;font-size:11px;border-radius:8px;" @click="viewTheaterHistory(h)">查看</button>
+        <button class="modal-btn cancel" style="flex:none;padding:4px 10px;font-size:11px;border-radius:8px;" @click="startEditTheaterHistory(i)">编辑</button>
+        <button style="background:transparent;border:none;cursor:pointer;color:#aaa;display:flex;align-items:center;padding:4px;" @click="collectTheater(h.result)"><i data-lucide="bookmark" style="width:13px;height:13px;"></i></button>
+        <button style="background:transparent;border:none;color:#e53e3e;cursor:pointer;font-size:11px;" @click="deleteTheaterHistory(theaterHistory.length-1-i)">删除</button>
+      </div>
+    </div>
+    <div style="font-size:12px;color:#555;line-height:1.5;">{{ h.prompt.slice(0,60) }}{{ h.prompt.length>60?'...':'' }}</div>
+
+    <!-- 编辑区域 -->
+    <div v-if="theaterEditingIndex===theaterHistory.length-1-i" style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">
+      <textarea class="modal-textarea" v-model="theaterEditingContent" style="min-height:160px;font-size:12px;line-height:1.8;"></textarea>
+      <div style="display:flex;gap:6px;">
+        <button class="modal-btn cancel" style="flex:none;padding:6px 14px;font-size:12px;" @click="cancelEditTheaterHistory">取消</button>
+        <button class="modal-btn confirm" style="flex:1;padding:6px 14px;font-size:12px;" @click="confirmEditTheaterHistory">保存</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-btns">
+    <button class="modal-btn cancel" @click="theaterTab='text'">返回</button>
+  </div>
+</div>
+
+
+    </div>
+  </div>
+</transition>
+
+<!-- HTML剧场展示弹窗 -->
+<transition name="modal">
+  <div v-if="theaterHtmlViewShow && appReady" style="position:fixed;inset:0;z-index:300;background:#f2f2f7;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+    <!-- iframe容器，大小可调 -->
+    <div :style="`width:${htmlViewWidth}%;height:${htmlViewHeight}vh;border-radius:${htmlViewRounded?'16px':'0'};overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.12);background:#fff;`">
+      <iframe :srcdoc="theaterHtmlResult" style="width:100%;height:100%;border:none;display:block;" sandbox="allow-same-origin allow-scripts"></iframe>
+    </div>
+
+    <!-- 尺寸控制面板 -->
+    <transition name="toolbar">
+      <div v-if="htmlViewPanelOpen" style="position:fixed;bottom:90px;right:16px;background:rgba(255,255,255,0.96);backdrop-filter:blur(16px);border-radius:16px;padding:14px 16px;box-shadow:0 4px 20px rgba(0,0,0,0.12);display:flex;flex-direction:column;gap:10px;min-width:200px;z-index:302;">
+        <div style="font-size:12px;font-weight:700;color:#888;">自定义尺寸</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#555;">
+            <span>宽度</span><span style="font-weight:600;color:#111;">{{ htmlViewWidth }}%</span>
+          </div>
+          <input type="range" min="40" max="100" step="1" v-model="htmlViewWidth" style="width:100%;accent-color:#111;" />
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#555;">
+            <span>高度</span><span style="font-weight:600;color:#111;">{{ htmlViewHeight }}vh</span>
+          </div>
+          <input type="range" min="30" max="100" step="1" v-model="htmlViewHeight" style="width:100%;accent-color:#111;" />
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#555;">
+          <span>圆角</span>
+          <div :class="htmlViewRounded?'toggle on':'toggle'" @click="htmlViewRounded=!htmlViewRounded" style="width:36px;height:22px;"></div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 底部按键 -->
+    <div style="position:fixed;bottom:24px;right:20px;display:flex;gap:10px;z-index:301;">
+      <button @click="htmlViewPanelOpen=!htmlViewPanelOpen" style="width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,0.92);backdrop-filter:blur(12px);border:none;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 12px rgba(0,0,0,0.15);">
+        <i data-lucide="maximize-2" style="width:18px;height:18px;"></i>
+      </button>
+      <button @click="collectTheater(theaterHtmlResult)" style="width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,0.92);backdrop-filter:blur(12px);border:none;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 12px rgba(0,0,0,0.15);">
+        <i data-lucide="bookmark" style="width:18px;height:18px;"></i>
+      </button>
+      <button @click="theaterHtmlViewShow=false; theaterShow=true; htmlViewPanelOpen=false" style="width:42px;height:42px;border-radius:50%;background:rgba(17,17,17,0.9);backdrop-filter:blur(12px);border:none;cursor:pointer;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 12px rgba(0,0,0,0.2);">
+        <i data-lucide="clapperboard" style="width:18px;height:18px;"></i>
+      </button>
+    </div>
+  </div>
+</transition>
+
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="emoji.js"></script>
+<script src="chatroom.js"></script>
+</body>
+</html>

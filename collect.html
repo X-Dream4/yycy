@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>收藏</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="collect.css" />
+</head>
+<body>
+<div id="collect-app" v-cloak>
+
+  <!-- 顶部栏 -->
+  <div class="collect-topbar">
+    <button class="topbar-icon-btn" @click="currentChar||currentRoom ? goBackList() : goBack()"><i data-lucide="arrow-left"></i></button>
+    <button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+    <div class="collect-topbar-title">{{ currentTitle }}</div>
+    <div style="width:36px;"></div>
+  </div>
+
+  <!-- 主列表页 -->
+  <div class="collect-body" v-if="!currentChar && !currentRoom">
+
+    <!-- 切换tab -->
+    <div style="display:flex;gap:0;margin-bottom:14px;border-radius:10px;overflow:hidden;border:1.5px solid #e5e5ea;">
+      <div style="flex:1;padding:9px 0;text-align:center;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;"
+        :style="viewMode==='chars'?'background:#111;color:#fff;':'background:#fff;color:#555;'"
+        @click="viewMode='chars'">角色</div>
+      <div style="flex:1;padding:9px 0;text-align:center;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s;border-left:1.5px solid #e5e5ea;"
+        :style="viewMode==='rooms'?'background:#111;color:#fff;':'background:#fff;color:#555;'"
+        @click="viewMode='rooms'">聊天室</div>
+    </div>
+
+    <!-- 角色列表 -->
+    <div v-if="viewMode==='chars'">
+      <div class="char-list" v-if="charGroups.length">
+        <div class="char-item" v-for="group in charGroups" :key="group.char.id" @click="openChar(group.char)">
+          <div class="char-avatar" :style="group.char.avatar ? `background-image:url(${group.char.avatar})` : ''">
+            <span v-if="!group.char.avatar">{{ group.char.name[0] }}</span>
+          </div>
+          <div class="char-info">
+            <div class="char-name">{{ group.char.name }}</div>
+            <div class="char-count">{{ group.total }} 条收藏</div>
+          </div>
+          <i data-lucide="chevron-right" style="width:16px;height:16px;color:#ccc;"></i>
+        </div>
+      </div>
+      <div class="collect-empty" v-else>
+        <i data-lucide="bookmark" style="width:40px;height:40px;color:#ddd;"></i>
+        <div>还没有角色收藏</div>
+      </div>
+    </div>
+
+    <!-- 聊天室列表 -->
+    <div v-if="viewMode==='rooms'">
+      <div class="char-list" v-if="roomGroups.length">
+        <div class="char-item" v-for="group in roomGroups" :key="group.room.id" @click="openRoom(group.room)">
+          <div class="char-avatar" style="background:#f0f0f5;">
+            <i data-lucide="users" style="width:20px;height:20px;color:#888;"></i>
+          </div>
+          <div class="char-info">
+            <div class="char-name">{{ group.room.name }}</div>
+            <div class="char-count">{{ group.total }} 条收藏</div>
+          </div>
+          <i data-lucide="chevron-right" style="width:16px;height:16px;color:#ccc;"></i>
+        </div>
+      </div>
+      <div class="collect-empty" v-else>
+        <i data-lucide="bookmark" style="width:40px;height:40px;color:#ddd;"></i>
+        <div>还没有聊天室收藏</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 收藏详情页 -->
+  <div class="collect-body" v-else>
+    <div class="type-tabs">
+      <div class="type-tab" :class="{active: currentType==='all'}" @click="currentType='all'">全部</div>
+      <div class="type-tab" :class="{active: currentType==='message'}" @click="currentType='message'">消息</div>
+      <div class="type-tab" :class="{active: currentType==='whisper'}" @click="currentType='whisper'">心声</div>
+      <div class="type-tab" :class="{active: currentType==='peek'}" @click="currentType='peek'">窥探</div>
+      <div class="type-tab" :class="{active: currentType==='mirror'}" @click="currentType='mirror'">时境</div>
+      <div class="type-tab" :class="{active: currentType==='summary'}" @click="currentType='summary'">总结</div>
+      <div class="type-tab" :class="{active: currentType==='theater'}" @click="currentType='theater'">剧场</div>
+    </div>
+
+    <div class="collect-list" v-if="filteredCollects.length">
+      <div class="collect-item" v-for="item in filteredCollects" :key="item.id">
+        <div class="collect-item-header">
+          <div class="collect-type-badge" :class="'type-'+item.type">{{ typeLabel(item.type) }}</div>
+          <div class="collect-by" v-if="item.collectedBy==='char'">
+            <i data-lucide="bookmark" style="width:11px;height:11px;"></i>
+            {{ item.charName || item.senderName || '角色' }} 收藏
+          </div>
+
+          <div class="collect-by" v-else>
+            <i data-lucide="bookmark" style="width:11px;height:11px;"></i>
+            我收藏
+          </div>
+          <div class="collect-time">{{ formatTime(item.time) }}</div>
+        </div>
+        <div class="collect-sender" v-if="item.senderName && item.type==='message'" style="font-size:11px;color:#aaa;margin-bottom:4px;">{{ item.senderName }}</div>
+        <div class="collect-content">{{ item.content }}</div>
+        <button
+          v-if="item.type==='theater' && item.content && (item.content.includes('<div') || item.content.includes('<html') || item.content.includes('<!DOCTYPE'))"
+          @click="previewHtml(item.content)"
+          style="margin-top:8px;padding:5px 14px;border-radius:20px;border:1.5px solid #e5e5ea;background:#f9f9f9;font-size:12px;color:#555;cursor:pointer;">
+          查看渲染效果
+        </button>
+        <div class="collect-reason" v-if="item.reason">
+          <i data-lucide="message-square" style="width:11px;height:11px;flex-shrink:0;"></i>
+          <span>{{ item.reason }}</span>
+        </div>
+        <button class="collect-delete" @click="deleteCollect(item)">
+          <i data-lucide="trash-2"></i>
+        </button>
+      </div>
+    </div>
+    <div class="collect-empty" v-else>
+      <i data-lucide="bookmark" style="width:40px;height:40px;color:#ddd;"></i>
+      <div>这个分类还没有收藏</div>
+    </div>
+  </div>
+<!-- HTML预览弹窗 -->
+<div v-if="htmlPreviewContent" style="position:fixed;inset:0;z-index:9998;background:#f2f2f7;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+  <div style="width:92%;height:80vh;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.12);background:#fff;">
+    <iframe :srcdoc="htmlPreviewContent" style="width:100%;height:100%;border:none;display:block;" sandbox="allow-same-origin allow-scripts"></iframe>
+  </div>
+  <button @click="htmlPreviewContent=null" style="margin-top:16px;padding:10px 28px;border-radius:24px;background:#111;color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer;">关闭</button>
+</div>
+
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask"
+ onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="collect.js"></script>
+</body>
+</html>

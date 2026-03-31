@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>动态</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="moments.css"/>
+</head>
+<body>
+<div id="cwm-app" v-cloak>
+
+  <div class="moments-header" :style="headerBg" @click="triggerHeaderBg" style="cursor:pointer;">
+    <div class="moments-header-bg"></div>
+    <button class="moments-header-back" @click.stop="goBack"><i data-lucide="arrow-left"></i></button>
+    <div class="moments-header-info" @click.stop>
+      <div v-if="!editingName" class="moments-header-name" @click="startEditName">{{ charName }}</div>
+      <input v-else id="name-edit-input" class="moments-name-edit-input" v-model="editNameInput" @keydown.enter.exact.prevent="confirmEditName" @blur="confirmEditName"/>
+    </div>
+    <div class="moments-header-avatar" :style="charAvatarStyle" @click.stop="triggerAvatar">
+      <span v-if="!charAvatarVal">{{ charName[0] }}</span>
+    </div>
+  </div>
+  <input type="file" ref="headerBgFile" accept="image/*" style="display:none" @change="uploadHeaderBg"/>
+  <input type="file" ref="avatarFile" accept="image/*" style="display:none" @change="uploadAvatar"/>
+
+  <div class="moments-profile">
+    <div v-if="!editingSignature" class="moments-signature" @click="startEditSignature">{{ signature || '点击添加个性签名' }}</div>
+    <input v-else class="moments-signature-edit" v-model="signatureInput" @keydown.enter.exact.prevent="confirmSignature" @blur="confirmSignature" placeholder="输入个性签名..."/>
+  </div>
+
+  <div class="pinned-section" v-if="pinnedMoments.length">
+    <div class="pinned-title">置顶动态</div>
+    <div class="pinned-list">
+      <div class="pinned-card" v-for="pm in pinnedMoments" :key="pm.id" @click="openDetail(pm)">
+        <div class="pinned-card-text">{{ pm.content }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="moments-body">
+    <div class="moments-list" v-if="visibleMoments.length">
+      <div class="moment-item" v-for="moment in visibleMoments" :key="moment.id">
+        <div class="moment-left">
+          <div class="moment-avatar" :style="getMomentAvatarStyle(moment)"><span v-if="!getMomentAvatarUrl(moment)">{{ getMomentDisplayName(moment)[0] }}</span></div>
+        </div>
+        <div class="moment-right">
+          <div class="moment-name">{{ getMomentDisplayName(moment) }}<span v-if="moment.pinned" style="font-size:10px;color:#aaa;font-weight:400;margin-left:6px;">置顶</span></div>
+          <div class="moment-content">{{ moment.content }}</div>
+          <div class="moment-bottom">
+            <div class="moment-time">{{ formatTime(moment.time) }}</div>
+          </div>
+          <div class="moment-action-row">
+            <div class="moment-visibility-tag" style="margin-right:auto;">
+              <i :data-lucide="visibilityIcon(moment)"></i>
+              <span>{{ visibilityLabel(moment) }}</span>
+            </div>
+            <div style="position:relative;">
+              <button class="moment-dot-btn" @click.stop="toggleDotMenu(moment)"><i data-lucide="more-horizontal"></i></button>
+              <div class="dot-menu" v-if="moment.dotMenuOpen" @click.stop>
+                <div class="dot-menu-item" @click="toggleLike(moment); closeDotMenu(moment)">
+                  <i data-lucide="heart" :style="moment.likedByChar?'color:#e53e3e;':''"></i>
+                  <span :style="moment.likedByChar?'color:#e53e3e;':''">{{ moment.likedByChar?'取消点赞':'点赞' }}</span>
+                </div>
+                <div class="dot-menu-item" @click="toggleMenu(moment); closeDotMenu(moment)">
+                  <i data-lucide="message-circle"></i><span>评论</span>
+                </div>
+                <div class="dot-menu-item" v-if="isCharOwn(moment)" @click="togglePin(moment); closeDotMenu(moment)">
+                  <i data-lucide="pin"></i><span>{{ moment.pinned?'取消置顶':'置顶' }}</span>
+                </div>
+                <div class="dot-menu-item danger" v-if="isCharOwn(moment)" @click="deleteMoment(moment); closeDotMenu(moment)">
+                  <i data-lucide="trash-2"></i><span>删除</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="moment-interact-block" v-if="(moment.likedChars&&moment.likedChars.length)||(moment.comments&&moment.comments.length)||moment.menuOpen">
+          <div class="moment-interact">
+            <div class="moment-likes-row" v-if="moment.likedChars&&moment.likedChars.length">
+              <i data-lucide="heart"></i><span>{{ moment.likedChars.join('、') }}</span>
+            </div>
+            <div v-if="moment.comments&&moment.comments.length" style="display:flex;flex-direction:column;gap:4px;" :style="moment.likedChars&&moment.likedChars.length?'margin-top:4px;':''">
+              <div class="moment-comment" v-for="(c,ci) in moment.comments" :key="ci"
+                @touchstart="onCommentTouchStart(moment, ci, $event)"
+                @touchend="onCommentTouchEnd"
+                @touchmove="onCommentTouchMove"
+                @mousedown="onCommentMouseDown(moment, ci, $event)"
+                @mouseup="onCommentMouseUp"
+                style="cursor:pointer;user-select:none;">
+                <span class="moment-comment-name">{{ c.name }}：</span>{{ c.text }}
+              </div>
+            </div>
+          </div>
+          <div v-if="moment.menuOpen" class="comment-row" style="padding:6px 16px 0;">
+            <input class="modal-input" style="font-size:13px;padding:7px 10px;" v-model="moment.commentInput" :placeholder="charName+'说...'" @keydown.enter.exact.prevent="submitComment(moment)"/>
+            <button class="modal-btn confirm" style="flex:none;padding:0 14px;height:36px;font-size:13px;" @click="submitComment(moment)">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="moments-empty" v-else>
+      <i data-lucide="image" style="width:40px;height:40px;color:#ddd;"></i>
+      <div>暂无可见动态</div>
+    </div>
+  </div>
+
+  <!-- 评论长按菜单 -->
+  <div v-if="commentMenuShow" style="position:fixed;inset:0;z-index:500;" @click="closeCommentMenu">
+    <div style="position:fixed;background:#fff;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,0.15);overflow:hidden;min-width:140px;"
+      :style="`top:${commentMenuPos.top}px;left:${commentMenuPos.left}px;transform:translate(${commentMenuPos.left > 200 ? '-100%' : '0'}, ${commentMenuPos.top > 400 ? '-100%' : '0'});`"
+      @click.stop>
+      <div style="padding:14px 18px;font-size:14px;color:#333;border-bottom:1px solid #f0f0f0;cursor:pointer;display:flex;align-items:center;gap:8px;" @click="openEditComment">
+        <i data-lucide="pencil" style="width:15px;height:15px;color:#555;"></i>
+        修改评论
+      </div>
+      <div style="padding:14px 18px;font-size:14px;color:#e53e3e;cursor:pointer;display:flex;align-items:center;gap:8px;" @click="deleteComment">
+        <i data-lucide="trash-2" style="width:15px;height:15px;color:#e53e3e;"></i>
+        删除评论
+      </div>
+    </div>
+  </div>
+
+  <!-- 修改评论弹窗 -->
+  <div class="modal-mask" v-if="commentEditShow" @click.self="commentEditShow=false">
+    <div class="modal-sheet">
+      <div class="sheet-handle"></div>
+      <div class="modal-title">修改评论</div>
+      <textarea class="modal-textarea" v-model="commentEditText" style="min-height:80px;" placeholder="修改评论内容..."></textarea>
+      <div class="modal-btns">
+        <button class="modal-btn cancel" @click="commentEditShow=false">取消</button>
+        <button class="modal-btn confirm" @click="confirmEditComment" :disabled="!commentEditText.trim()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail-modal-mask" v-if="detailMoment" @click.self="detailMoment=null">
+    <div class="detail-modal">
+      <div class="detail-content">{{ detailMoment.content }}</div>
+      <div class="detail-time">{{ formatTime(detailMoment.time) }}</div>
+      <div v-if="detailMoment.likedChars&&detailMoment.likedChars.length" class="moment-interact" style="margin:0;">
+        <div class="moment-likes-row"><i data-lucide="heart"></i><span>{{ detailMoment.likedChars.join('、') }}</span></div>
+      </div>
+      <div v-if="detailMoment.comments&&detailMoment.comments.length" class="moment-interact" style="margin:0;">
+        <div class="moment-comment" v-for="(c,ci) in detailMoment.comments" :key="ci"><span class="moment-comment-name">{{ c.name }}：</span>{{ c.text }}</div>
+      </div>
+      <button class="modal-btn cancel" @click="detailMoment=null">关闭</button>
+    </div>
+  </div>
+
+</div>
+<script src="db.js"></script>
+<script>
+const { createApp, ref, computed, onMounted, nextTick } = Vue;
+createApp({
+  setup() {
+    const params = new URLSearchParams(window.location.search);
+    const charId = parseInt(params.get('charId'));
+    const charName = ref('');
+    const charAvatarVal = ref('');
+    const charAvatarStyle = computed(() => charAvatarVal.value ? `background-image:url(${charAvatarVal.value})` : '');
+    const myName = ref('我');
+    const myAvatar = ref('');
+    const allMoments = ref([]);
+    const allChars = ref([]);
+    const headerBgUrl = ref('');
+    const editingName = ref(false);
+    const editNameInput = ref('');
+    const editingSignature = ref(false);
+    const signatureInput = ref('');
+    const signature = ref('');
+    const detailMoment = ref(null);
+    const headerBgFile = ref(null);
+    const avatarFile = ref(null);
+
+    // 评论长按菜单
+    const commentMenuShow = ref(false);
+    const commentMenuMoment = ref(null);
+    const commentMenuIndex = ref(-1);
+    const commentMenuPos = ref({ top: 0, left: 0 });
+    const commentEditShow = ref(false);
+    const commentEditText = ref('');
+    let commentLongPressTimer = null;
+
+    const goBack = () => { window.location.href = `char-world-list.html?charId=${charId}`; };
+    const headerBg = computed(() => headerBgUrl.value ? `background-image:url(${headerBgUrl.value})` : 'background:linear-gradient(135deg,#2a2a3a,#1a1a2a)');
+    const formatTime = (ts) => {
+      if (!ts) return '';
+      const now = new Date(); const d = new Date(ts);
+      const diff = now - d;
+      if (diff < 60000) return '刚刚';
+      if (diff < 3600000) return Math.floor(diff/60000)+'分钟前';
+      if (diff < 86400000) return Math.floor(diff/3600000)+'小时前';
+      if (diff < 2592000000) return Math.floor(diff/86400000)+'天前';
+      return `${d.getMonth()+1}月${d.getDate()}日`;
+    };
+
+    const visibilityLabel = (m) => { if (m.visibility==='self') return '仅自己'; if (m.visibility==='only') return '部分可见'; if (m.visibility==='except') return '部分不可见'; return '所有人'; };
+    const visibilityIcon = (m) => { if (m.visibility==='self') return 'lock'; if (m.visibility==='only') return 'users'; if (m.visibility==='except') return 'user-x'; return 'globe'; };
+    const isCharOwn = (moment) => moment.authorType === 'char' && moment.charId === charId;
+
+    const canCharSeeMoment = (moment) => {
+      if (isCharOwn(moment)) return true;
+      if (moment.authorType === 'me') {
+        if (moment.visibility === 'self') return false;
+        if (moment.visibility === 'only') return moment.visibilityChars && moment.visibilityChars.includes(charId);
+        if (moment.visibility === 'except') return !moment.visibilityChars || !moment.visibilityChars.includes(charId);
+        return true;
+      }
+      if (moment.visibility === 'self') return false;
+      return true;
+    };
+
+    const visibleMoments = computed(() => allMoments.value.filter(m => canCharSeeMoment(m)).slice().sort((a,b) => b.time - a.time));
+
+    const pinnedMoments = computed(() => allMoments.value.filter(m => isCharOwn(m) && m.pinned));
+
+    const getMomentDisplayName = (moment) => {
+      if (moment.authorType === 'me') return myName.value;
+      const c = allChars.value.find(c => c.id === moment.charId);
+      return c?.name || moment.charName || '未知';
+    };
+    const getMomentAvatarUrl = (moment) => {
+      if (moment.authorType === 'me') return myAvatar.value;
+      const c = allChars.value.find(c => c.id === moment.charId);
+      return c?.avatar || '';
+    };
+    const getMomentAvatarStyle = (moment) => { const u = getMomentAvatarUrl(moment); return u ? `background-image:url(${u})` : ''; };
+
+    const saveMoments = async () => {
+      await dbSet('moments', JSON.parse(JSON.stringify(allMoments.value.map(m => { const { menuOpen, commentInput, dotMenuOpen, ...rest } = m; return rest; }))));
+    };
+
+    const toggleLike = async (moment) => {
+      moment.likedByChar = !moment.likedByChar;
+      if (!moment.likedChars) moment.likedChars = [];
+      if (moment.likedByChar) { if (!moment.likedChars.includes(charName.value)) moment.likedChars.push(charName.value); }
+      else { moment.likedChars = moment.likedChars.filter(n => n !== charName.value); }
+      await saveMoments();
+    };
+
+    const toggleMenu = (moment) => { moment.menuOpen = !moment.menuOpen; nextTick(() => lucide.createIcons()); };
+    const toggleDotMenu = (moment) => { const was = moment.dotMenuOpen; allMoments.value.forEach(m => m.dotMenuOpen = false); moment.dotMenuOpen = !was; nextTick(() => lucide.createIcons()); };
+    const closeDotMenu = (moment) => { moment.dotMenuOpen = false; };
+    const togglePin = async (moment) => { moment.pinned = !moment.pinned; await saveMoments(); nextTick(() => lucide.createIcons()); };
+    const deleteMoment = async (moment) => { if (!confirm('确定删除？')) return; const idx = allMoments.value.findIndex(m => m.id === moment.id); if (idx !== -1) { allMoments.value.splice(idx, 1); await saveMoments(); } nextTick(() => lucide.createIcons()); };
+    const submitComment = async (moment) => { if (!moment.commentInput || !moment.commentInput.trim()) return; if (!moment.comments) moment.comments = []; moment.comments.push({ name: charName.value, text: moment.commentInput.trim(), time: Date.now() }); moment.commentInput = ''; await saveMoments(); };
+    const openDetail = (moment) => { detailMoment.value = moment; nextTick(() => lucide.createIcons()); };
+
+    // 评论长按菜单
+    const onCommentTouchStart = (moment, ci, e) => {
+      const touch = e.touches[0];
+      commentLongPressTimer = setTimeout(() => {
+        const comment = moment.comments[ci];
+        if (!comment || comment.name !== charName.value) return;
+        commentMenuMoment.value = moment;
+        commentMenuIndex.value = ci;
+        commentMenuPos.value = { top: touch.clientY, left: touch.clientX };
+        commentMenuShow.value = true;
+        nextTick(() => lucide.createIcons());
+      }, 500);
+    };
+
+    const onCommentTouchEnd = () => { clearTimeout(commentLongPressTimer); };
+    const onCommentTouchMove = () => { clearTimeout(commentLongPressTimer); };
+
+    const onCommentMouseDown = (moment, ci, e) => {
+      commentLongPressTimer = setTimeout(() => {
+        const comment = moment.comments[ci];
+        if (!comment || comment.name !== charName.value) return;
+        commentMenuMoment.value = moment;
+        commentMenuIndex.value = ci;
+        commentMenuPos.value = { top: e.clientY, left: e.clientX };
+        commentMenuShow.value = true;
+        nextTick(() => lucide.createIcons());
+      }, 500);
+    };
+
+    const onCommentMouseUp = () => { clearTimeout(commentLongPressTimer); };
+
+    const closeCommentMenu = () => {
+      commentMenuShow.value = false;
+      commentMenuMoment.value = null;
+      commentMenuIndex.value = -1;
+    };
+
+    const deleteComment = async () => {
+      const moment = commentMenuMoment.value;
+      const ci = commentMenuIndex.value;
+      if (!moment || ci < 0) return;
+      moment.comments.splice(ci, 1);
+      await saveMoments();
+      closeCommentMenu();
+    };
+
+    const openEditComment = () => {
+      const moment = commentMenuMoment.value;
+      const ci = commentMenuIndex.value;
+      if (!moment || ci < 0) return;
+      commentEditText.value = moment.comments[ci].text;
+      commentEditShow.value = true;
+      commentMenuShow.value = false;
+      nextTick(() => lucide.createIcons());
+    };
+
+    const confirmEditComment = async () => {
+      if (!commentEditText.value.trim()) return;
+      const moment = commentMenuMoment.value;
+      const ci = commentMenuIndex.value;
+      if (!moment || ci < 0) return;
+      moment.comments[ci].text = commentEditText.value.trim();
+      await saveMoments();
+      commentEditShow.value = false;
+      closeCommentMenu();
+    };
+
+    const triggerHeaderBg = () => { headerBgFile.value.click(); };
+    const uploadHeaderBg = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = async (evt) => { headerBgUrl.value = evt.target.result; await dbSet(`cwMomentsBg_${charId}`, headerBgUrl.value); e.target.value = ''; }; reader.readAsDataURL(file); };
+    const triggerAvatar = () => { avatarFile.value.click(); };
+    const uploadAvatar = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = async (evt) => { charAvatarVal.value = evt.target.result; const charList = JSON.parse(JSON.stringify((await dbGet('charList'))||[])); const idx = charList.findIndex(c => c.id === charId); if (idx !== -1) { if (!charList[idx].cwBeauty) charList[idx].cwBeauty = {}; charList[idx].cwBeauty.avatar = charAvatarVal.value; await dbSet('charList', charList); } e.target.value = ''; }; reader.readAsDataURL(file); };
+    const startEditName = () => { editNameInput.value = charName.value; editingName.value = true; nextTick(() => { const el = document.getElementById('name-edit-input'); if (el) el.focus(); }); };
+    const confirmEditName = async () => { if (!editNameInput.value.trim()) return; charName.value = editNameInput.value.trim(); editingName.value = false; const charList = JSON.parse(JSON.stringify((await dbGet('charList'))||[])); const idx = charList.findIndex(c => c.id === charId); if (idx !== -1) { charList[idx].name = charName.value; await dbSet('charList', charList); } };
+    const startEditSignature = () => { signatureInput.value = signature.value; editingSignature.value = true; nextTick(() => { const el = document.querySelector('.moments-signature-edit'); if (el) el.focus(); }); };
+    const confirmSignature = async () => { signature.value = signatureInput.value.trim(); editingSignature.value = false; await dbSet(`cwSignature_${charId}`, signature.value); };
+
+    onMounted(async () => {
+      const dark = await dbGet('darkMode');
+      if (dark) document.body.classList.add('dark');
+      const [charList, randomCharList, mySettings, savedMoments] = await Promise.all([dbGet('charList'), dbGet('randomCharList'), dbGet('mySettings_global'), dbGet('moments')]);
+      const chars = [...(charList||[]), ...(randomCharList||[])];
+      const char = chars.find(c => c.id === charId);
+      if (!char) { goBack(); return; }
+      charName.value = char.name;
+      allChars.value = chars;
+      for (const c of allChars.value) { const b = await dbGet(`chatBeauty_${c.id}`); if (b && b.charAvatar) c.avatar = b.charAvatar; }
+      const beauty = await dbGet(`chatBeauty_${charId}`);
+      if (beauty && beauty.charAvatar) charAvatarVal.value = beauty.charAvatar;
+      if (char.cwBeauty && char.cwBeauty.avatar) charAvatarVal.value = char.cwBeauty.avatar;
+      if (mySettings) { myName.value = mySettings.name || '我'; myAvatar.value = mySettings.avatar || ''; }
+      const bg = await dbGet(`cwMomentsBg_${charId}`);
+      if (bg) headerBgUrl.value = bg;
+      const sig = await dbGet(`cwSignature_${charId}`);
+      if (sig) signature.value = sig;
+      if (savedMoments) allMoments.value = savedMoments.map(m => ({ ...m, menuOpen: false, commentInput: '', dotMenuOpen: false }));
+      setTimeout(() => lucide.createIcons(), 50);
+    });
+
+    return {
+      charName, charAvatarVal, charAvatarStyle, myName, visibleMoments, pinnedMoments,
+      headerBg, headerBgFile, avatarFile, editingName, editNameInput,
+      editingSignature, signatureInput, signature, detailMoment,
+      formatTime, visibilityLabel, visibilityIcon, isCharOwn,
+      getMomentDisplayName, getMomentAvatarUrl, getMomentAvatarStyle,
+      toggleLike, toggleMenu, toggleDotMenu, closeDotMenu, togglePin,
+      deleteMoment, submitComment, openDetail,
+      triggerHeaderBg, uploadHeaderBg, triggerAvatar, uploadAvatar,
+      startEditName, confirmEditName, startEditSignature, confirmSignature, goBack,
+      commentMenuShow, commentMenuMoment, commentMenuIndex, commentMenuPos,
+      commentEditShow, commentEditText,
+      onCommentTouchStart, onCommentTouchEnd, onCommentTouchMove,
+      onCommentMouseDown, onCommentMouseUp,
+      closeCommentMenu, deleteComment, openEditComment, confirmEditComment,
+    };
+  }
+}).mount('#cwm-app');
+</script>
+</body>
+</html>

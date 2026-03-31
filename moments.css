@@ -1,0 +1,127 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #f2f2f7; min-height: 100vh; font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif; }
+body.dark { background: #1a1a1a; color: #eee; }
+[v-cloak] { display: none; }
+.moments-header { position: relative; height: 180px; background: #222; background-size: cover; background-position: center; }
+.moments-header-bg { display: none; }
+.moments-header-back { position: absolute; top: 16px; left: 16px; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,0.3); backdrop-filter: blur(8px); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #fff; z-index: 10; }
+.moments-header-post { position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,0.3); backdrop-filter: blur(8px); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #fff; z-index: 10; }
+.moments-header-info { position: absolute; bottom: 16px; right: 92px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; z-index: 10; }
+.moments-header-name { font-size: 16px; font-weight: 700; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,0.5); cursor: pointer; }
+.moments-header-avatar { width: 64px; height: 64px; border-radius: 12px; background: #e0e0e0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: #888; flex-shrink: 0; position: absolute; right: 16px; bottom: -32px; z-index: 20; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+.moments-body { padding-bottom: 80px; }
+.moments-list { display: flex; flex-direction: column; gap: 0; }
+.moment-item { background: #fff; padding: 14px 16px 10px; border-bottom: 1px solid #f0f0f0; display: flex; flex-wrap: wrap; gap: 12px; }
+body.dark .moment-item { background: #2a2a2a; border-bottom-color: #333; }
+.moment-left { flex-shrink: 0; }
+.moment-avatar { width: 44px; height: 44px; border-radius: 8px; background: #e0e0e0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; color: #888; }
+body.dark .moment-avatar { background: #444; color: #aaa; }
+.moment-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.moment-name { font-size: 14px; font-weight: 600; color: #576b95; }
+body.dark .moment-name { color: #7a9cc8; }
+.moment-content { font-size: 14px; color: #333; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+body.dark .moment-content { color: #ccc; }
+.moment-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+.moment-time { font-size: 12px; color: #aaa; }
+.moment-visibility-tag { font-size: 11px; color: #aaa; display: flex; align-items: center; gap: 3px; }
+.moment-visibility-tag i { width: 11px; height: 11px; }
+.moment-action-row { display: flex; justify-content: flex-end; }
+.moment-menu-btn { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; background: #f0f0f5; border: none; cursor: pointer; color: #555; font-size: 12px; }
+body.dark .moment-menu-btn { background: #333; color: #aaa; }
+.moment-menu-btn i { width: 12px; height: 12px; }
+.moment-interact { background: #f0f0f5; border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+body.dark .moment-interact { background: #222; }
+.moment-likes-row { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #576b95; padding-bottom: 4px; border-bottom: 1px solid rgba(0,0,0,0.06); }
+body.dark .moment-likes-row { border-bottom-color: rgba(255,255,255,0.06); color: #7a9cc8; }
+.moment-likes-row i { width: 13px; height: 13px; }
+.moment-comment { font-size: 13px; color: #333; line-height: 1.6; }
+body.dark .moment-comment { color: #ccc; }
+.moment-comment-name { font-weight: 600; color: #576b95; margin-right: 4px; }
+body.dark .moment-comment-name { color: #7a9cc8; }
+.moment-delete-btn { background: transparent; border: none; cursor: pointer; color: #ddd; padding: 4px; display: flex; align-items: center; }
+.moment-delete-btn:hover { color: #e53e3e; }
+.moment-delete-btn i { width: 13px; height: 13px; }
+.moments-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 80px 0; color: #bbb; font-size: 14px; text-align: center; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 300; display: flex; align-items: flex-end; justify-content: center; }
+.modal-sheet { background: #fff; border-radius: 20px 20px 0 0; padding: 20px 16px 40px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 14px; max-height: 85vh; overflow-y: auto; }
+body.dark .modal-sheet { background: #2a2a2a; }
+.sheet-handle { width: 36px; height: 4px; background: #e0e0e0; border-radius: 2px; margin: 0 auto; }
+.modal-title { font-size: 16px; font-weight: 700; color: #111; text-align: center; }
+body.dark .modal-title { color: #eee; }
+.modal-input { border: 1.5px solid #e5e5ea; border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; color: #111; background: #f9f9f9; width: 100%; font-family: inherit; }
+body.dark .modal-input { background: #333; border-color: #444; color: #eee; }
+.modal-textarea { border: 1.5px solid #e5e5ea; border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; color: #111; background: #f9f9f9; resize: vertical; min-height: 120px; font-family: inherit; width: 100%; }
+body.dark .modal-textarea { background: #333; border-color: #444; color: #eee; }
+.modal-btn { flex: 1; padding: 12px; border-radius: 12px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.modal-btn.confirm { background: #111; color: #fff; }
+.modal-btn.confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+.modal-btn.cancel { background: #f2f2f7; color: #555; }
+body.dark .modal-btn.cancel { background: #333; color: #aaa; }
+.modal-btns { display: flex; gap: 10px; }
+.section-label { font-size: 13px; font-weight: 600; color: #333; }
+body.dark .section-label { color: #eee; }
+.visibility-options { display: flex; flex-direction: column; gap: 8px; }
+.visibility-option { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1.5px solid #e5e5ea; cursor: pointer; transition: all 0.15s; }
+.visibility-option.selected { border-color: #111; background: #f5f5f5; }
+body.dark .visibility-option { border-color: #444; }
+body.dark .visibility-option.selected { border-color: #eee; background: #333; }
+.visibility-option-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.visibility-option-label { font-size: 13px; color: #333; font-weight: 500; }
+body.dark .visibility-option-label { color: #eee; }
+.visibility-option-desc { font-size: 11px; color: #aaa; }
+.char-check-list { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+.char-check-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: background 0.15s; }
+.char-check-item:hover { background: #f5f5f5; }
+body.dark .char-check-item:hover { background: #333; }
+.char-check-avatar { width: 32px; height: 32px; border-radius: 50%; background: #e0e0e0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #888; flex-shrink: 0; }
+body.dark .char-check-avatar { background: #444; color: #aaa; }
+.char-check-name { flex: 1; font-size: 13px; color: #333; }
+body.dark .char-check-name { color: #eee; }
+.check-circle { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #ccc; flex-shrink: 0; display: flex; align-items: center; justify-content: center; transition: all 0.15s; }
+.check-circle.checked { background: #111; border-color: #111; }
+body.dark .check-circle.checked { background: #eee; border-color: #eee; }
+.comment-row { display: flex; gap: 8px; align-items: center; }
+.comment-row input { flex: 1; }
+.loading-dots { display: flex; gap: 4px; justify-content: center; padding: 8px 0; }
+.loading-dots span { width: 6px; height: 6px; border-radius: 50%; background: #aaa; animation: bounce 1.2s infinite; }
+.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce { 0%,80%,100% { transform: scale(0.8); opacity: 0.5; } 40% { transform: scale(1.2); opacity: 1; } }
+
+.moment-menu-btn.liked { color: #e53e3e; }
+.moments-name-edit-input { background: transparent; border: none; border-bottom: 1px solid rgba(255,255,255,0.6); outline: none; color: #fff; font-size: 16px; font-weight: 700; width: 120px; text-align: right; }
+.moments-profile { background: #fff; padding: 44px 16px 12px; border-bottom: 1px solid #f0f0f0; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+body.dark .moments-profile { background: #2a2a2a; border-bottom-color: #333; }
+.moments-signature { font-size: 12px; color: #aaa; cursor: pointer; text-align: right; }
+.moments-signature-edit { border: none; border-bottom: 1px solid #e5e5ea; outline: none; font-size: 12px; color: #555; background: transparent; width: 200px; text-align: right; font-family: inherit; }
+body.dark .moments-signature-edit { color: #aaa; border-bottom-color: #444; }
+.pinned-section { background: #fff; padding: 10px 16px; border-bottom: 1px solid #f0f0f0; }
+body.dark .pinned-section { background: #2a2a2a; border-bottom-color: #333; }
+.pinned-title { font-size: 11px; color: #aaa; font-weight: 700; margin-bottom: 8px; letter-spacing: 0.5px; }
+.pinned-list { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.pinned-list::-webkit-scrollbar { display: none; }
+.pinned-card { flex-shrink: 0; width: 80px; height: 80px; border-radius: 8px; background: #f5f5f5; border: 1px solid #e5e5ea; padding: 8px; display: flex; align-items: flex-start; cursor: pointer; overflow: hidden; position: relative; }
+body.dark .pinned-card { background: #333; border-color: #444; }
+.pinned-card-text { font-size: 11px; color: #555; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+body.dark .pinned-card-text { color: #aaa; }
+.moment-dot-btn { background: transparent; border: none; cursor: pointer; color: #aaa; display: flex; align-items: center; padding: 4px; margin-left: auto; }
+.moment-dot-btn i { width: 16px; height: 16px; }
+.dot-menu { position: absolute; right: 0; top: 28px; background: #fff; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); z-index: 50; overflow: hidden; min-width: 100px; }
+body.dark .dot-menu { background: #2a2a2a; }
+.dot-menu-item { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 13px; color: #333; cursor: pointer; transition: background 0.15s; }
+.dot-menu-item:hover { background: #f5f5f5; }
+body.dark .dot-menu-item { color: #eee; }
+body.dark .dot-menu-item:hover { background: #333; }
+.dot-menu-item i { width: 14px; height: 14px; }
+.dot-menu-item.danger { color: #e53e3e; }
+.moment-right { position: relative; }
+.detail-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 400; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.detail-modal { background: #fff; border-radius: 16px; padding: 20px; width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 10px; max-height: 80vh; overflow-y: auto; }
+body.dark .detail-modal { background: #2a2a2a; }
+.detail-content { font-size: 15px; color: #333; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+body.dark .detail-content { color: #ccc; }
+.detail-time { font-size: 12px; color: #aaa; }
+
+.moment-interact-block { width: 100%; padding: 0 0 8px; display: flex; flex-direction: column; gap: 0; }
+.moment-interact { background: #f0f0f5; border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 2px; margin: 0 16px; }
+body.dark .moment-interact { background: #222; }

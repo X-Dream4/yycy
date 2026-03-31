@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>喜欢</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="like.css" />
+</head>
+<body>
+<div id="like-app" v-cloak>
+
+  <!-- ===== 顶部栏 ===== -->
+  <div class="like-topbar">
+    <button class="like-menu-btn" @click="drawerOpen=!drawerOpen">
+      <i data-lucide="menu"></i>
+    </button>
+    <div class="like-topbar-title">{{ currentTabTitle }}</div>
+<button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+  </div>
+  <!-- ===== 侧栏 ===== -->
+  <div class="like-drawer-mask" :class="{open: drawerOpen}" @click="drawerOpen=false">
+    <div class="like-drawer" :class="{open: drawerOpen}" @click.stop>
+      <button class="like-drawer-btn" :class="{active: tab==='like'}" @click="tab='like'; drawerOpen=false">
+        <i data-lucide="heart"></i> 喜欢
+      </button>
+      <button class="like-drawer-btn" :class="{active: tab==='settings'}" @click="tab='settings'; drawerOpen=false">
+        <i data-lucide="settings"></i> 设置
+      </button>
+      <button class="like-drawer-btn" :class="{active: tab==='theme'}" @click="tab='theme'; drawerOpen=false">
+        <i data-lucide="paintbrush"></i> 美化
+      </button>
+      <button class="like-drawer-btn" :class="{active: tab==='memory'}" @click="tab='memory'; drawerOpen=false; loadMemory()">
+        <i data-lucide="pie-chart"></i> 内存
+      </button>
+      <div class="like-drawer-spacer"></div>
+      <div class="like-drawer-divider"></div>
+      <button class="like-drawer-btn" @click="goBack">
+        <i data-lucide="arrow-left"></i> 返回
+      </button>
+    </div>
+  </div>
+
+  <!-- ===== 主内容区 ===== -->
+  <div class="like-content">
+
+    <div v-if="tab==='like'" class="tab-panel">
+      <div class="panel-title">喜欢</div>
+
+      <div class="like-empty">
+        <i data-lucide="heart" style="width:48px;height:48px;color:#ccc;"></i>
+        <p>还没有喜欢的角色</p>
+      </div>
+    </div>
+
+
+    <div v-if="tab==='settings'" class="tab-panel">
+      <div class="panel-title">设置</div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">API 连接</div>
+        <div class="settings-item">
+          <label>API 网址</label>
+          <input class="settings-input" v-model="api.url" placeholder="https://api.example.com/v1" />
+        </div>
+        <div class="settings-item">
+          <label>API 密钥</label>
+          <input class="settings-input" type="password" v-model="api.key" placeholder="sk-..." />
+        </div>
+        <div class="settings-item">
+          <label>模型</label>
+          <div class="settings-row" style="gap:8px;">
+            <div class="model-input-wrap">
+              <input class="settings-input" v-model="api.model" placeholder="点击获取或手动输入" @click="showModelDrop=true" />
+              <div class="model-dropdown" v-if="showModelDrop && modelList.length">
+                <div class="model-item" v-for="m in modelList" :key="m" @click="selectModel(m)">{{ m }}</div>
+              </div>
+            </div>
+            <button class="settings-btn" @click="fetchModels">获取</button>
+          </div>
+        </div>
+        <div class="settings-item" style="margin-top:6px;">
+          <label>总结专用 API 网址（不填则使用主API）</label>
+          <input class="settings-input" v-model="api.summaryUrl" placeholder="https://api.example.com/v1" />
+        </div>
+        <div class="settings-item">
+          <label>总结专用 API 密钥</label>
+          <input class="settings-input" type="password" v-model="api.summaryKey" placeholder="sk-..." />
+        </div>
+        <div class="settings-item">
+          <label>总结专用模型</label>
+          <div class="settings-row" style="gap:8px;">
+            <div class="model-input-wrap">
+              <input class="settings-input" v-model="api.summaryModel" placeholder="点击获取或手动输入" @click="showSummaryModelDrop=true" />
+              <div class="model-dropdown" v-if="showSummaryModelDrop && summaryModelList.length">
+                <div class="model-item" v-for="m in summaryModelList" :key="m" @click="selectSummaryModel(m)">{{ m }}</div>
+              </div>
+            </div>
+            <button class="settings-btn" @click="fetchSummaryModels">获取</button>
+          </div>
+        </div>
+        <div class="settings-row" style="gap:8px;margin-top:6px;">
+          <button class="settings-btn" @click="showSummaryPresetPanel=!showSummaryPresetPanel">总结API预设</button>
+        </div>
+        <div v-if="showSummaryPresetPanel" class="preset-panel">
+          <div class="settings-card-title">总结API预设</div>
+          <div class="preset-item" v-for="(p,i) in apiPresets" :key="i">
+            <span @click="loadSummaryPreset(p)">{{ p.name }}</span>
+          </div>
+          <div style="font-size:11px;color:#aaa;margin-top:4px;">点击预设名称即可将该预设填入总结专用API</div>
+        </div>
+        <div class="settings-row" style="margin-top:10px;gap:8px;">
+          <button class="settings-btn primary" @click="saveApi">保存</button>
+          <button class="settings-btn" @click="showPresetPanel=!showPresetPanel">主API预设</button>
+        </div>
+        <div v-if="showPresetPanel" class="preset-panel">
+          <div class="settings-card-title">主API预设</div>
+          <div class="preset-item" v-for="(p,i) in apiPresets" :key="i">
+            <span @click="loadPreset(p)">{{ p.name }}</span>
+            <button class="preset-del" @click="deletePreset(i)">删除</button>
+          </div>
+          <div class="settings-row" style="gap:8px;margin-top:8px;">
+            <input class="settings-input" v-model="presetName" placeholder="预设名称" />
+            <button class="settings-btn primary" @click="savePreset">保存预设</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">导入 / 导出</div>
+
+        <!-- 全量 -->
+        <div style="font-size:12px;font-weight:600;color:#888;margin-bottom:2px;">全量数据</div>
+        <div class="settings-row" style="gap:8px;">
+          <button class="settings-btn primary" @click="exportData">导出全部</button>
+          <button class="settings-btn" @click="triggerImport">导入全部</button>
+        </div>
+
+        <!-- 美化数据 -->
+        <div style="font-size:12px;font-weight:600;color:#888;margin-top:8px;margin-bottom:2px;">美化数据</div>
+        <div class="settings-row" style="gap:8px;">
+          <button class="settings-btn primary" @click="exportBeauty">导出美化</button>
+          <button class="settings-btn" @click="triggerImportBeauty">导入美化</button>
+        </div>
+
+        <!-- 单角色 -->
+        <div style="font-size:12px;font-weight:600;color:#888;margin-top:8px;margin-bottom:2px;">单个角色数据</div>
+        <div class="settings-row" style="gap:8px;flex-wrap:wrap;">
+          <select class="settings-input" v-model="exportCharId" style="flex:1;padding:8px;">
+            <option value="">选择角色...</option>
+            <option v-for="c in exportCharList" :key="c.id" :value="c.id">{{ c.name }}</option>
+          </select>
+          <button class="settings-btn primary" @click="exportSingleChar" :disabled="!exportCharId">导出</button>
+          <button class="settings-btn" @click="triggerImportChar">导入</button>
+        </div>
+
+        <input type="file" ref="importFile" accept=".json" style="display:none" @change="importData" />
+        <input type="file" ref="importBeautyFile" accept=".json" style="display:none" @change="importBeauty" />
+        <input type="file" ref="importCharFile" accept=".json" style="display:none" @change="importSingleChar" />
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">储存查看</div>
+        <div class="storage-info">
+          <div class="storage-row"><span>角色名</span><span>{{ storageInfo.charName || '未设置' }}</span></div>
+          <div class="storage-row"><span>个性签名</span><span>{{ storageInfo.charBio || '未设置' }}</span></div>
+          <div class="storage-row"><span>背景图</span><span>{{ storageInfo.hasBg ? '已设置' : '未设置' }}</span></div>
+          <div class="storage-row"><span>头像</span><span>{{ storageInfo.hasAvatar ? '已设置' : '未设置' }}</span></div>
+          <div class="storage-row"><span>胶片图片</span><span>{{ storageInfo.filmCount }} / 3</span></div>
+          <div class="storage-row"><span>API网址</span><span>{{ storageInfo.apiUrl || '未设置' }}</span></div>
+          <div class="storage-row"><span>API模型</span><span>{{ storageInfo.apiModel || '未设置' }}</span></div>
+          <div class="storage-row"><span>拍立得</span><span>{{ storageInfo.hasPolaroid ? '已设置' : '未设置' }}</span></div>
+          <div class="storage-row"><span>已连接角色</span><span>{{ storageInfo.charCount }} 个</span></div>
+          <div class="storage-row"><span>聊天室</span><span>{{ storageInfo.roomCount }} 个</span></div>
+          <div class="storage-row"><span>总消息数</span><span>{{ storageInfo.totalMsgs }} 条</span></div>
+        </div>
+        <button class="settings-btn danger" style="margin-top:10px;" @click="clearStorage">清空所有储存</button>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">控制台日志</div>
+        <div class="console-box">
+          <div class="console-line" v-for="(log,i) in consoleLogs" :key="i" :class="log.type">
+            <span class="console-time">{{ log.time }}</span>
+            <span>{{ log.msg }}</span>
+          </div>
+          <div v-if="!consoleLogs.length" class="console-empty">暂无日志</div>
+        </div>
+        <button class="settings-btn" style="margin-top:8px;" @click="consoleLogs=[]">清空日志</button>
+      </div>
+    </div>
+
+    <div v-if="tab==='theme'" class="tab-panel">
+      <div class="panel-title">美化</div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">夜间模式</div>
+        <div class="settings-row" style="justify-content:space-between;align-items:center;">
+          <span style="font-size:14px;color:#333;">开启夜间模式</span>
+          <div class="toggle" :class="{on: darkMode}" @click="toggleDark"></div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="tab==='memory'" class="tab-panel">
+      <div class="panel-title">内存</div>
+
+      <!-- 甜甜圈图 -->
+      <div class="settings-card" style="align-items:center;">
+        <div class="settings-card-title" style="align-self:flex-start;">存储占用总览</div>
+        <div style="position:relative;width:200px;height:200px;margin:8px auto;">
+          <svg width="200" height="200" viewBox="0 0 200 200">
+            <circle cx="100" cy="100" r="70" fill="none" stroke="#f0f0f5" stroke-width="28"/>
+            <circle v-for="(seg, i) in memoryDonut" :key="i"
+              cx="100" cy="100" r="70" fill="none"
+              :stroke="seg.color" stroke-width="28"
+              :stroke-dasharray="`${seg.dash} ${seg.gap}`"
+              :stroke-dashoffset="seg.offset"
+              style="transition:all 0.5s;"
+            />
+          </svg>
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+            <div style="font-size:20px;font-weight:700;color:#111;">{{ memoryTotal }}</div>
+            <div style="font-size:11px;color:#aaa;">总占用</div>
+          </div>
+        </div>
+        <!-- 图例 -->
+        <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:4px;">
+          <div v-for="seg in memoryDonut" :key="seg.label" style="display:flex;align-items:center;gap:4px;font-size:12px;color:#555;">
+            <div :style="`width:10px;height:10px;border-radius:50%;background:${seg.color};flex-shrink:0;`"></div>
+            <span>{{ seg.label }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 详细列表 -->
+      <div class="settings-card">
+        <div class="settings-card-title">详细占用</div>
+        <div v-if="memoryLoading" style="text-align:center;color:#aaa;font-size:13px;padding:20px 0;">计算中...</div>
+        <div v-else>
+          <div v-for="item in memoryDetails" :key="item.label" style="display:flex;flex-direction:column;gap:4px;padding:8px 0;border-bottom:1px solid #f0f0f0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div style="display:flex;align-items:center;gap:6px;">
+                <div :style="`width:8px;height:8px;border-radius:50%;background:${item.color};flex-shrink:0;`"></div>
+                <span style="font-size:13px;color:#333;font-weight:500;">{{ item.label }}</span>
+              </div>
+              <span style="font-size:13px;color:#888;font-weight:600;">{{ item.size }}</span>
+            </div>
+            <!-- 进度条 -->
+            <div style="height:4px;background:#f0f0f5;border-radius:4px;overflow:hidden;">
+              <div :style="`width:${item.percent}%;height:100%;background:${item.color};border-radius:4px;transition:width 0.5s;`"></div>
+            </div>
+            <!-- 子项 -->
+            <div v-if="item.children && item.children.length" style="display:flex;flex-direction:column;gap:2px;margin-top:4px;padding-left:14px;">
+              <div v-for="child in item.children" :key="child.label" style="display:flex;justify-content:space-between;font-size:11px;color:#aaa;">
+                <span>{{ child.label }}</span>
+                <span>{{ child.size }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="settings-btn" style="margin-top:8px;" @click="loadMemory">刷新</button>
+      </div>
+    </div>
+
+    <div v-if="tab==='theme'" class="tab-panel">
+      <div class="settings-card">
+        <div class="settings-card-title">页面壁纸</div>
+
+        <!-- 主页壁纸 -->
+        <div style="font-size:12px;font-weight:600;color:#888;margin-bottom:6px;">主页 / 喜欢页壁纸</div>
+        <div class="wallpaper-preview" :style="wallpaperStyle">
+          <span v-if="!wallpaper">未设置壁纸</span>
+        </div>
+        <div class="settings-row" style="gap:8px;margin-top:10px;">
+          <input class="settings-input" v-model="wallpaperUrl" placeholder="粘贴壁纸 URL..." />
+          <button class="settings-btn primary" @click="applyWallpaperUrl">确认</button>
+        </div>
+        <button class="settings-btn" style="margin-top:8px;" @click="triggerWallpaper">本地上传</button>
+        <button class="settings-btn danger" style="margin-top:8px;" @click="clearWallpaper">清除壁纸</button>
+        <input type="file" ref="wallpaperFile" accept="image/*" style="display:none" @change="uploadWallpaper" />
+
+        <!-- 全局壁纸开关 -->
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #f0f0f0;">
+          <div class="settings-row" style="justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-size:14px;color:#333;font-weight:500;">设为全局壁纸</div>
+              <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后其他未单独设置壁纸的页面也使用主页壁纸</div>
+            </div>
+            <div class="toggle" :class="{on: wallpaperGlobal}" @click="toggleWallpaperGlobal"></div>
+          </div>
+        </div>
+
+        <!-- 各页面单独壁纸 -->
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #f0f0f0;">
+          <div style="font-size:12px;font-weight:600;color:#888;margin-bottom:10px;">各页面单独壁纸（优先级高于全局）</div>
+          <div v-for="(label, key) in pageLabels" :key="key" style="margin-bottom:14px;">
+            <div style="font-size:13px;color:#333;font-weight:500;margin-bottom:6px;">{{ label }}</div>
+            <div class="wallpaper-preview" :style="pageWallpapers[key] ? `background-image:url(${pageWallpapers[key]})` : ''" style="height:60px;">
+              <span v-if="!pageWallpapers[key]">未设置</span>
+            </div>
+            <div class="settings-row" style="gap:8px;margin-top:6px;">
+              <input class="settings-input" v-model="pageWallpaperUrls[key]" placeholder="粘贴壁纸 URL..." />
+              <button class="settings-btn primary" @click="applyPageWallpaperUrl(key)">确认</button>
+            </div>
+            <div class="settings-row" style="gap:8px;margin-top:4px;">
+              <button class="settings-btn" @click="triggerPageWallpaper(key)">本地上传</button>
+              <button class="settings-btn danger" @click="clearPageWallpaper(key)" v-if="pageWallpapers[key]">清除</button>
+            </div>
+          </div>
+        </div>
+        <input type="file" ref="pageWallpaperFile" accept="image/*" style="display:none" @change="uploadPageWallpaper" />
+      </div>
+      <div class="settings-card">
+        <div class="settings-card-title">自定义字体</div>
+        <!-- 字体预览框 -->
+        <div class="font-preview-box" :style="previewFontStyle">
+          <div class="font-preview-line">晓看天色暮看云，行也思君，坐也思君</div>
+          <div class="font-preview-line">The price of the shirt is nine pounds and fifteen pence.</div>
+          <div class="font-preview-line">世界は絶えず回転し、私たちが出会うまで。</div>
+          <div class="font-preview-line">내가 너의 내일이 되기 위해 오늘을 살아왔어.</div>
+          <div class="font-preview-line">0123456789 ！@#￥%……&*（）</div>
+        </div>
+        <!-- URL输入 -->
+        <div class="settings-item">
+          <label>字体 URL（支持 .ttf .woff .woff2 等）</label>
+          <div class="settings-row" style="gap:8px;">
+            <input class="settings-input" v-model="customFontUrl" placeholder="https://example.com/font.woff2" style="flex:1;" />
+            <button class="settings-btn" @click="previewFontFromUrl">预览</button>
+          </div>
+        </div>
+        <!-- 本地上传 -->
+        <div class="settings-item">
+          <label>本地上传字体</label>
+          <button class="settings-btn" @click="triggerFontUpload">选择字体文件</button>
+          <input type="file" ref="fontFile" accept=".ttf,.otf,.woff,.woff2" style="display:none" @change="previewFontFromFile" />
+        </div>
+        <div style="font-size:11px;color:#aaa;">当前字体：{{ customFontName || '系统默认' }}</div>
+        <!-- 操作按钮 -->
+        <div class="settings-row" style="gap:8px;margin-top:4px;">
+          <button class="settings-btn primary" @click="applyCustomFont" :disabled="!previewFontLoaded">使用字体</button>
+          <button class="settings-btn danger" @click="clearCustomFont">恢复默认</button>
+        </div>
+      </div>
+      <div class="settings-card">
+        <div class="settings-card-title">全局字体大小</div>
+        <div style="font-size:13px;color:#555;margin-bottom:4px;">当前大小：{{ globalFontSize }}px</div>
+        <input type="range" min="10" max="22" step="1" v-model="globalFontSize" @input="applyGlobalFontSize" style="width:100%;accent-color:#111;" />
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#aaa;margin-top:2px;">
+          <span>小 10px</span><span>默认 15px</span><span>大 22px</span>
+        </div>
+        <div class="settings-row" style="gap:8px;margin-top:8px;">
+          <button class="settings-btn primary" @click="saveGlobalFontSize">保存</button>
+          <button class="settings-btn danger" @click="clearGlobalFontSize">恢复默认</button>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">App 图标</div>
+        <div class="icon-grid">
+          <div class="icon-item" v-for="item in appIcons" :key="item.key">
+            <div class="icon-preview" :style="item.icon ? `background-image:url(${item.icon})` : ''" @click="triggerIconUpload(item.key)">
+              <span v-if="!item.icon">{{ item.label }}</span>
+            </div>
+            <span class="icon-label">{{ item.label }}</span>
+          </div>
+        </div>
+        <input type="file" ref="iconFile" accept="image/*" style="display:none" @change="uploadIcon" />
+      </div>
+    </div>
+
+  </div>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="like.js"></script>
+</body>
+</html>

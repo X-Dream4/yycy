@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>动态</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="moments.css"/>
+</head>
+<body>
+<div id="moments-app" v-cloak>
+
+  <div class="moments-header" :style="headerBg" @click="triggerHeaderBg" style="cursor:pointer;">
+    <div class="moments-header-bg"></div>
+    <button class="moments-header-back" @click.stop="goBack"><i data-lucide="arrow-left"></i></button>
+    <button class="moments-header-post" @click.stop="openPost"><i data-lucide="camera"></i></button>
+    <div class="moments-header-info" @click.stop>
+      <div v-if="!editingName" class="moments-header-name" @click="startEditName">{{ myName }}</div>
+      <input v-else id="name-edit-input" class="moments-name-edit-input" v-model="editNameInput" @keydown.enter.exact.prevent="confirmEditName" @blur="confirmEditName"/>
+    </div>
+    <div class="moments-header-avatar" :style="myAvatarStyle" @click.stop="triggerAvatar"><span v-if="!myAvatar">{{ myName[0] }}</span></div>
+  </div>
+  <input type="file" ref="headerBgFile" accept="image/*" style="display:none" @change="uploadHeaderBg"/>
+  <input type="file" ref="avatarFile" accept="image/*" style="display:none" @change="uploadAvatar"/>
+
+  <div class="moments-profile">
+    <div v-if="!editingSignature" class="moments-signature" @click="startEditSignature">{{ signature || '点击添加个性签名' }}</div>
+    <input v-else class="moments-signature-edit" v-model="signatureInput" @keydown.enter.exact.prevent="confirmSignature" @blur="confirmSignature" placeholder="输入个性签名..."/>
+  </div>
+
+  <div class="pinned-section" v-if="pinnedMoments.length">
+    <div class="pinned-title">置顶动态</div>
+    <div class="pinned-list">
+      <div class="pinned-card" v-for="pm in pinnedMoments" :key="pm.id" @click="openDetail(pm)">
+        <div class="pinned-card-text">{{ pm.content }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="moments-body">
+    <div class="moments-list" v-if="visibleMoments.length">
+      <div class="moment-item" v-for="moment in visibleMoments" :key="moment.id">
+        <div class="moment-left">
+          <div class="moment-avatar" :style="getMomentAvatarStyle(moment)"><span v-if="!getMomentAvatarUrl(moment)">{{ getMomentDisplayName(moment)[0] }}</span></div>
+        </div>
+        <div class="moment-right">
+          <div class="moment-name">{{ getMomentDisplayName(moment) }}<span v-if="moment.pinned" style="font-size:10px;color:#aaa;font-weight:400;margin-left:6px;">置顶</span></div>
+          <div class="moment-content">{{ moment.content }}</div>
+          <div class="moment-bottom">
+            <div class="moment-time">{{ formatTime(moment.time) }}</div>
+          </div>
+          <div class="moment-action-row">
+            <div class="moment-visibility-tag" style="margin-right:auto;">
+              <i :data-lucide="visibilityIcon(moment)"></i>
+              <span>{{ visibilityLabel(moment) }}</span>
+            </div>
+            <div style="position:relative;">
+              <button class="moment-dot-btn" @click.stop="toggleDotMenu(moment)"><i data-lucide="more-horizontal"></i></button>
+              <div class="dot-menu" v-if="moment.dotMenuOpen" @click.stop>
+                <div class="dot-menu-item" @click="toggleLike(moment); closeDotMenu(moment)">
+                  <i data-lucide="heart" :style="moment.likedByMe?'color:#e53e3e;':''"></i>
+                  <span :style="moment.likedByMe?'color:#e53e3e;':''">{{ moment.likedByMe ? '取消点赞' : '点赞' }}</span>
+                </div>
+                <div class="dot-menu-item" @click="toggleMenu(moment); closeDotMenu(moment)">
+                  <i data-lucide="message-circle"></i>
+                  <span>评论</span>
+                </div>
+                <div class="dot-menu-item" @click="togglePin(moment); closeDotMenu(moment)">
+                  <i data-lucide="pin"></i>
+                  <span>{{ moment.pinned ? '取消置顶' : '置顶' }}</span>
+                </div>
+                <div class="dot-menu-item danger" @click="deleteMoment(moment); closeDotMenu(moment)">
+                  <i data-lucide="trash-2"></i>
+                  <span>删除</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="moment-interact-block" v-if="(moment.likedChars && moment.likedChars.length) || (moment.comments && moment.comments.length) || moment.menuOpen">
+          <div class="moment-interact">
+            <div class="moment-likes-row" v-if="moment.likedChars && moment.likedChars.length">
+              <i data-lucide="heart"></i>
+              <span>{{ moment.likedChars.join('、') }}</span>
+            </div>
+            <div v-if="moment.comments && moment.comments.length" style="display:flex;flex-direction:column;gap:4px;" :style="moment.likedChars && moment.likedChars.length ? 'margin-top:4px;' : ''">
+              <div class="moment-comment" v-for="(c, ci) in moment.comments" :key="ci"
+                @touchstart="onCommentTouchStart(moment, ci, $event)"
+                @touchend="onCommentTouchEnd"
+                @touchmove="onCommentTouchMove"
+                @mousedown="onCommentMouseDown(moment, ci, $event)"
+                @mouseup="onCommentMouseUp"
+                style="cursor:pointer;user-select:none;">
+                <span class="moment-comment-name">{{ c.name }}：</span>{{ c.text }}
+              </div>
+            </div>
+          </div>
+          <div v-if="moment.menuOpen" class="comment-row" style="padding:6px 16px 0;">
+            <input class="modal-input" style="font-size:13px;padding:7px 10px;" v-model="moment.commentInput" placeholder="写评论..." @keydown.enter.exact.prevent="submitComment(moment)"/>
+            <button class="modal-btn confirm" style="flex:none;padding:0 14px;height:36px;font-size:13px;" @click="submitComment(moment)">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="moments-empty" v-if="!visibleMoments.length">
+      <i data-lucide="image" style="width:40px;height:40px;color:#ddd;"></i>
+      <div>还没有动态，点右上角发布第一条</div>
+    </div>
+  </div>
+
+  <!-- 评论长按菜单 -->
+  <div v-if="commentMenuShow" style="position:fixed;inset:0;z-index:500;" @click="closeCommentMenu">
+    <div style="position:fixed;background:#fff;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,0.15);overflow:hidden;min-width:140px;"
+      :style="`top:${commentMenuPos.top}px;left:${commentMenuPos.left}px;transform:translate(${commentMenuPos.left > 200 ? '-100%' : '0'}, ${commentMenuPos.top > 400 ? '-100%' : '0'});`"
+      @click.stop>
+      <div style="padding:14px 18px;font-size:14px;color:#333;border-bottom:1px solid #f0f0f0;cursor:pointer;display:flex;align-items:center;gap:8px;" @click="openEditComment">
+        <i data-lucide="pencil" style="width:15px;height:15px;color:#555;"></i>
+        修改评论
+      </div>
+      <div style="padding:14px 18px;font-size:14px;color:#e53e3e;cursor:pointer;display:flex;align-items:center;gap:8px;" @click="deleteComment">
+        <i data-lucide="trash-2" style="width:15px;height:15px;color:#e53e3e;"></i>
+        删除评论
+      </div>
+    </div>
+  </div>
+
+  <!-- 修改评论弹窗 -->
+  <div class="modal-mask" v-if="commentEditShow" @click.self="commentEditShow=false">
+    <div class="modal-sheet">
+      <div class="sheet-handle"></div>
+      <div class="modal-title">修改评论</div>
+      <textarea class="modal-textarea" v-model="commentEditText" style="min-height:80px;" placeholder="修改评论内容..."></textarea>
+      <div class="modal-btns">
+        <button class="modal-btn cancel" @click="commentEditShow=false">取消</button>
+        <button class="modal-btn confirm" @click="confirmEditComment" :disabled="!commentEditText.trim()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 发动态弹窗 -->
+  <div class="modal-mask" v-if="postShow" @click.self="postShow=false">
+    <div class="modal-sheet">
+      <div class="sheet-handle"></div>
+      <div class="modal-title">发动态</div>
+      <textarea class="modal-textarea" v-model="postContent" placeholder="这一刻的想法..."></textarea>
+
+      <div class="section-label">可见范围</div>
+      <div class="visibility-options">
+        <div class="visibility-option" :class="{selected: postVisibility==='all'}" @click="postVisibility='all'; postVisibilityChars=[]">
+          <i data-lucide="globe" style="width:18px;height:18px;color:#555;flex-shrink:0;"></i>
+          <div class="visibility-option-info">
+            <div class="visibility-option-label">全部联系人可见</div>
+            <div class="visibility-option-desc">所有角色都能看到这条动态</div>
+          </div>
+        </div>
+        <div class="visibility-option" :class="{selected: postVisibility==='only'}" @click="postVisibility='only'">
+          <i data-lucide="users" style="width:18px;height:18px;color:#555;flex-shrink:0;"></i>
+          <div class="visibility-option-info">
+            <div class="visibility-option-label">仅指定人可见</div>
+            <div class="visibility-option-desc">只有选中的角色能看到</div>
+          </div>
+        </div>
+        <div class="visibility-option" :class="{selected: postVisibility==='except'}" @click="postVisibility='except'">
+          <i data-lucide="user-x" style="width:18px;height:18px;color:#555;flex-shrink:0;"></i>
+          <div class="visibility-option-info">
+            <div class="visibility-option-label">指定人不可见</div>
+            <div class="visibility-option-desc">除选中角色外都能看到</div>
+          </div>
+        </div>
+        <div class="visibility-option" :class="{selected: postVisibility==='self'}" @click="postVisibility='self'; postVisibilityChars=[]">
+          <i data-lucide="lock" style="width:18px;height:18px;color:#555;flex-shrink:0;"></i>
+          <div class="visibility-option-info">
+            <div class="visibility-option-label">仅自己可见</div>
+            <div class="visibility-option-desc">只有你自己能看到这条动态</div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="postVisibility==='only' || postVisibility==='except'">
+        <div class="section-label" style="margin-bottom:8px;">{{ postVisibility==='only' ? '选择可见角色' : '选择不可见角色' }}</div>
+        <div class="char-check-list">
+          <div class="char-check-item" v-for="char in allChars" :key="char.id" @click="toggleVisibilityChar(char.id)">
+            <div class="char-check-avatar" :style="char.avatar ? `background-image:url(${char.avatar})` : ''"><span v-if="!char.avatar">{{ char.name[0] }}</span></div>
+            <div class="char-check-name">{{ char.name }}</div>
+            <div class="check-circle" :class="{checked: postVisibilityChars.includes(char.id)}"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-btns">
+        <button class="modal-btn cancel" @click="postShow=false">取消</button>
+        <button class="modal-btn confirm" @click="submitPost" :disabled="!postContent.trim()">发布</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 动态详情弹窗 -->
+  <div class="detail-modal-mask" v-if="detailMoment" @click.self="detailMoment=null">
+    <div class="detail-modal">
+      <div class="detail-content">{{ detailMoment.content }}</div>
+      <div class="detail-time">{{ formatTime(detailMoment.time) }}</div>
+      <div v-if="detailMoment.likedChars && detailMoment.likedChars.length" class="moment-interact" style="margin:0;">
+        <div class="moment-likes-row"><i data-lucide="heart"></i><span>{{ detailMoment.likedChars.join('、') }}</span></div>
+      </div>
+      <div v-if="detailMoment.comments && detailMoment.comments.length" class="moment-interact" style="margin:0;">
+        <div class="moment-comment" v-for="(c,ci) in detailMoment.comments" :key="ci"><span class="moment-comment-name">{{ c.name }}：</span>{{ c.text }}</div>
+      </div>
+      <button class="modal-btn cancel" @click="detailMoment=null">关闭</button>
+    </div>
+  </div>
+
+</div>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="moments.js"></script>
+</body>
+</html>

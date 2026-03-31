@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>异次元</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <character-card
+    :bg-style="bgStyle"
+    :avatar-style="avatarStyle"
+    :char-name="charName"
+    :char-bio="charBio"
+    :images="images"
+    @open-picker="openPicker"
+    @update:char-name="charName = $event"
+    @update:char-bio="charBio = $event"
+  ></character-card>
+
+  <div class="transparent-block">
+    <div class="row">
+      <div class="app-btn" @click="onApp('chat')">
+        <div class="app-icon-wrap">
+          <img v-if="appsRow1[0].icon" class="app-icon-img" :src="appsRow1[0].icon" :alt="appsRow1[0].label" />
+          <div v-else class="app-icon-placeholder">图标</div>
+        </div>
+        <span class="app-btn-label">{{ appsRow1[0].label }}</span>
+      </div>
+      <film-strip :film-frames="filmFrames" :film-images="filmImages" @open-picker="openPicker"></film-strip>
+    </div>
+  </div>
+
+  <div class="transparent-block">
+    <div class="row">
+      <polaroid-card :polaroid-style="polaroidStyle" :images="images" @open-picker="openPicker"></polaroid-card>
+      <div class="app-group-col" style="margin-left:auto">
+        <div class="app-row">
+          <div class="app-btn" v-for="btn in appsRow2" :key="btn.key" @click="onApp(btn.key)">
+            <div class="app-icon-wrap">
+              <img v-if="btn.icon" class="app-icon-img" :src="btn.icon" :alt="btn.label" />
+              <div v-else class="app-icon-placeholder">图标</div>
+            </div>
+            <span class="app-btn-label">{{ btn.label }}</span>
+          </div>
+        </div>
+        <div class="app-row">
+          <div class="app-btn" v-for="btn in appsRow3" :key="btn.key" @click="onApp(btn.key)">
+            <div class="app-icon-wrap">
+              <img v-if="btn.icon" class="app-icon-img" :src="btn.icon" :alt="btn.label" />
+              <div v-else class="app-icon-placeholder">图标</div>
+            </div>
+            <span class="app-btn-label">{{ btn.label }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <image-picker :picker="picker" @close="closePicker" @confirm-url="confirmUrl" @trigger-upload="triggerUpload"></image-picker>
+
+  <input type="file" ref="fileInput" accept="image/*" @change="onFileChange" />
+</div>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="app.js"></script>
+<script src="components.js"></script>
+</body>
+</html>

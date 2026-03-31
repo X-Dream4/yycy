@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>次元漫画</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
+<link rel="stylesheet" href="manga.css" />
+</head>
+<body>
+<div id="manga-app" v-cloak>
+
+  <!-- ===== 阅读页 ===== -->
+  <div class="manga-read-page" v-if="view==='read'" @click="toggleReadUI">
+
+    <div class="manga-read-topbar" :class="{hidden: !readUIShow}">
+      <button class="manga-icon-btn" @click.stop="closeRead"><i data-lucide="arrow-left"></i></button>
+      <div class="manga-read-title">{{ currentManga.title }} · {{ currentChapter.title }}</div>
+      <button class="manga-read-mode-btn" @click.stop="toggleReadMode" title="切换模式">
+        <i :data-lucide="readMode==='pager'?'align-justify':'book-open'"></i>
+      </button>
+    </div>
+
+    <!-- 横向翻页模式 -->
+    <div class="manga-pager" v-if="readMode==='pager'">
+      <img class="manga-page-img" v-if="currentPages.length" :src="currentPages[currentPage]" @dragstart.prevent />
+      <div class="manga-pager-left" @click.stop="prevPage"></div>
+      <div class="manga-pager-right" @click.stop="nextPage"></div>
+    </div>
+
+    <!-- 纵向滚动模式 -->
+    <div class="manga-scroll-mode" v-if="readMode==='scroll'" ref="scrollArea" @scroll="onScrollRead">
+      <img class="manga-scroll-img" v-for="(src, i) in currentPages" :key="i" :src="src" />
+    </div>
+
+    <!-- 底部控制栏 -->
+    <div class="manga-read-bottombar" :class="{hidden: !readUIShow}" @click.stop>
+      <div class="manga-read-progress-row">
+        <span class="manga-read-progress-text">{{ currentPage + 1 }} / {{ currentPages.length }}</span>
+        <div class="manga-read-progress-bar">
+          <div class="manga-read-progress-fill" :style="`width:${currentPages.length ? (currentPage+1)/currentPages.length*100 : 0}%`"></div>
+        </div>
+      </div>
+      <div class="manga-read-controls">
+        <button class="manga-read-btn" @click="prevChapterRead" :disabled="currentChapterIndex===0">上一章</button>
+        <span class="manga-page-num" v-if="readMode==='pager'">{{ currentPage + 1 }} / {{ currentPages.length }}</span>
+        <button class="manga-read-btn" @click="nextChapterRead" :disabled="currentChapterIndex===currentManga.chapters.length-1">下一章</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 列表页 ===== -->
+  <div v-if="view==='list'">
+    <div class="manga-topbar">
+      <button class="manga-icon-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+<button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+      <div class="manga-topbar-title">次元漫画</div>
+      <div style="position:relative;">
+        <button class="manga-new-btn" @click="openNewMenu=!openNewMenu">
+          <i data-lucide="plus"></i> 添加
+        </button>
+        <div class="manga-new-menu" v-if="openNewMenu">
+          <div class="manga-new-menu-item" @click="triggerCbzUpload"><i data-lucide="upload"></i> 上传 cbz 文件</div>
+          <div class="manga-new-menu-item" @click="triggerEpubUpload"><i data-lucide="book"></i> 上传 epub 漫画</div>
+          <div class="manga-new-menu-item" @click="triggerPdfUpload"><i data-lucide="file-text"></i> 上传 PDF 漫画</div>
+          <div class="manga-new-menu-item" @click="triggerImgUpload"><i data-lucide="image"></i> 上传图片文件夹</div>
+          <div class="manga-new-menu-item" @click="openCreateManual"><i data-lucide="pen-line"></i> 手动创建</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="manga-list-body">
+      <div class="manga-grid" v-if="mangaList.length">
+        <div class="manga-card" v-for="m in mangaList" :key="m.id" @click="openManga(m)">
+          <div class="manga-card-cover" :style="m.cover ? `background-image:url(${m.cover})` : ''">
+            <span v-if="!m.cover">{{ m.title[0] }}</span>
+          </div>
+          <div class="manga-card-info">
+            <div class="manga-card-title">{{ m.title }}</div>
+            <div class="manga-card-meta">{{ m.chapters.length }} 章 · {{ m.pageCount || 0 }} 页</div>
+          </div>
+          <div class="manga-card-actions" @click.stop>
+            <button class="manga-card-action-btn" @click="deleteManga(m)"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="manga-empty" v-else>
+        <i data-lucide="image" style="width:48px;height:48px;color:#ddd;"></i>
+        <div>还没有漫画，点击添加上传</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 漫画详情页 ===== -->
+  <div v-if="view==='detail'">
+    <div class="manga-topbar">
+      <button class="manga-icon-btn" @click="view='list'"><i data-lucide="arrow-left"></i></button>
+      <div class="manga-topbar-title">{{ currentManga.title }}</div>
+      <button class="manga-icon-btn" @click="openEditManga"><i data-lucide="settings"></i></button>
+    </div>
+
+    <div class="manga-detail-body">
+      <div class="manga-detail-cover" :style="currentManga.cover ? `background-image:url(${currentManga.cover})` : ''">
+        <span v-if="!currentManga.cover" style="font-size:60px;">{{ currentManga.title[0] }}</span>
+      </div>
+      <div class="manga-detail-title">{{ currentManga.title }}</div>
+      <div class="manga-detail-meta">{{ currentManga.chapters.length }} 章 · {{ currentManga.pageCount || 0 }} 页</div>
+
+      <div class="manga-chapter-list">
+        <div class="manga-chapter-item" v-for="(ch, i) in currentManga.chapters" :key="i" @click="openRead(i)">
+          <div class="manga-chapter-num">{{ i + 1 }}</div>
+          <div class="manga-chapter-info">
+            <div class="manga-chapter-title">{{ ch.title }}</div>
+            <div class="manga-chapter-pages">{{ ch.pages.length }} 页</div>
+          </div>
+          <button class="manga-chapter-del" @click.stop="deleteChapter(i)"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+        </div>
+        <button class="manga-add-chapter-btn" @click="openAddChapter">
+          <i data-lucide="plus"></i> 添加章节
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 创建/编辑漫画弹窗 ===== -->
+  <transition name="modal">
+    <div class="manga-modal-mask" v-if="createShow" @click.self="createShow=false">
+      <div class="manga-modal-box">
+        <div class="manga-modal-title">{{ editingManga ? '编辑漫画' : '创建漫画' }}</div>
+        <div class="manga-field">
+          <label>标题</label>
+          <input class="manga-input" v-model="createForm.title" placeholder="漫画标题..." />
+        </div>
+        <div class="manga-field">
+          <label>封面图片 URL（可选）</label>
+          <input class="manga-input" v-model="createForm.coverUrl" placeholder="粘贴封面图片URL..." />
+        </div>
+        <div class="manga-modal-btns">
+          <button class="manga-modal-btn cancel" @click="createShow=false">取消</button>
+          <button class="manga-modal-btn confirm" @click="confirmCreate">{{ editingManga ? '保存' : '创建' }}</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 添加章节弹窗 ===== -->
+  <transition name="modal">
+    <div class="manga-modal-mask" v-if="addChapterShow" @click.self="addChapterShow=false">
+      <div class="manga-modal-box">
+        <div class="manga-modal-title">添加章节</div>
+        <div class="manga-field">
+          <label>章节标题</label>
+          <input class="manga-input" v-model="chapterForm.title" placeholder="例：第1话" />
+        </div>
+        <div class="manga-field">
+          <label>上传图片</label>
+          <button class="manga-add-chapter-btn" @click="triggerChapterImgs" style="margin-bottom:8px;">
+            <i data-lucide="image"></i> 选择图片（可多选）
+          </button>
+          <div class="manga-img-grid" v-if="chapterForm.pages.length">
+            <div class="manga-img-thumb" v-for="(src, i) in chapterForm.pages" :key="i">
+              <img :src="src" />
+              <button class="manga-img-thumb-del" @click="chapterForm.pages.splice(i,1)"><i data-lucide="x" style="width:12px;height:12px;"></i></button>
+            </div>
+          </div>
+        </div>
+        <div class="manga-modal-btns">
+          <button class="manga-modal-btn cancel" @click="addChapterShow=false">取消</button>
+          <button class="manga-modal-btn confirm" @click="confirmAddChapter" :disabled="!chapterForm.pages.length">保存</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+
+  <input type="file" id="manga-cbz-file" accept=".cbz,.zip" style="display:none" @change="handleCbzUpload" />
+  <input type="file" id="manga-epub-file" accept=".epub" style="display:none" @change="handleEpubUpload" />
+  <input type="file" id="manga-pdf-file" accept=".pdf" style="display:none" @change="handlePdfUpload" />
+  <input type="file" id="manga-img-file" accept="image/*" multiple style="display:none" @change="handleImgUpload" />
+  <input type="file" id="manga-chapter-imgs" accept="image/*" multiple style="display:none" @change="handleChapterImgs" />
+
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="manga.js"></script>
+</body>
+</html>

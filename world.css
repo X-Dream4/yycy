@@ -1,0 +1,117 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #f2f2f7; min-height: 100vh; font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif; }
+body.dark { background: #1a1a1a; color: #eee; }
+[v-cloak] { display: none; }
+
+.world-topbar { position: fixed; top: 0; left: 0; right: 0; height: 56px; background: rgba(255,255,255,0.85); backdrop-filter: blur(16px); display: flex; align-items: center; padding: 0 16px; gap: 10px; z-index: 100; box-shadow: 0 1px 0 rgba(0,0,0,0.08); }
+body.dark .world-topbar { background: rgba(30,30,30,0.85); }
+.world-title { flex: 1; text-align: center; font-size: 16px; font-weight: 600; color: #111; }
+body.dark .world-title { color: #eee; }
+.world-back-btn { width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #555; }
+.world-back-btn i { width: 20px; height: 20px; }
+body.dark .world-back-btn { color: #aaa; }
+
+.world-content { margin-top: 72px; padding: 16px; }
+
+.world-module-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+
+.world-module-card { background: #fff; border-radius: 16px; padding: 20px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; box-shadow: 0 1px 8px rgba(0,0,0,0.07); cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
+.world-module-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+.world-module-card.coming-soon { opacity: 0.5; cursor: default; }
+.world-module-card.coming-soon:hover { transform: none; box-shadow: 0 1px 8px rgba(0,0,0,0.07); }
+body.dark .world-module-card { background: #2a2a2a; }
+.world-module-icon { width: 52px; height: 52px; border-radius: 14px; background: #f0f0f5; display: flex; align-items: center; justify-content: center; }
+body.dark .world-module-icon { background: #333; }
+.world-module-icon i { width: 26px; height: 26px; color: #555; }
+body.dark .world-module-icon i { color: #aaa; }
+.world-module-name { font-size: 15px; font-weight: 600; color: #111; }
+body.dark .world-module-name { color: #eee; }
+.world-module-desc { font-size: 12px; color: #aaa; text-align: center; }
+
+.forum-post-btn { width: 36px; height: 36px; border-radius: 50%; border: none; background: #111; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.forum-post-btn i { width: 18px; height: 18px; }
+body.dark .forum-post-btn { background: #eee; color: #111; }
+
+.forum-tabs { position: fixed; top: 56px; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); display: flex; gap: 8px; padding: 8px 16px; overflow-x: auto; scrollbar-width: none; z-index: 90; border-bottom: 1px solid rgba(0,0,0,0.06); }
+.forum-tabs::-webkit-scrollbar { display: none; }
+body.dark .forum-tabs { background: rgba(30,30,30,0.9); border-bottom-color: rgba(255,255,255,0.06); }
+.forum-tab { padding: 5px 14px; border-radius: 20px; font-size: 13px; color: #555; background: #f0f0f5; white-space: nowrap; cursor: pointer; flex-shrink: 0; transition: all 0.15s; }
+.forum-tab.active { background: #111; color: #fff; }
+.forum-tab-add { background: transparent; border: 1.5px dashed #ccc; color: #aaa; }
+body.dark .forum-tab { background: #333; color: #aaa; }
+body.dark .forum-tab.active { background: #eee; color: #111; }
+
+.forum-list { margin-top: 112px; padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+
+.forum-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 60px 0; color: #aaa; font-size: 14px; }
+
+.forum-post-card { background: #fff; border-radius: 14px; padding: 14px 16px; box-shadow: 0 1px 6px rgba(0,0,0,0.07); cursor: pointer; display: flex; flex-direction: column; gap: 8px; transition: box-shadow 0.15s; }
+.forum-post-card:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.12); }
+body.dark .forum-post-card { background: #2a2a2a; }
+
+.forum-post-header { display: flex; align-items: center; gap: 10px; }
+.forum-post-avatar { width: 36px; height: 36px; border-radius: 50%; background: #e0e0e0; background-size: cover; background-position: center; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #888; }
+.forum-post-avatar.small { width: 30px; height: 30px; font-size: 12px; flex-shrink: 0; }
+body.dark .forum-post-avatar { background: #444; color: #aaa; }
+.forum-post-meta { flex: 1; min-width: 0; }
+.forum-post-author { font-size: 13px; font-weight: 600; color: #111; }
+body.dark .forum-post-author { color: #eee; }
+.forum-post-time { font-size: 11px; color: #aaa; }
+.forum-post-cat { font-size: 11px; color: #888; background: #f0f0f5; border-radius: 6px; padding: 2px 8px; flex-shrink: 0; }
+body.dark .forum-post-cat { background: #333; color: #aaa; }
+.forum-post-title { font-size: 15px; font-weight: 600; color: #111; line-height: 1.4; }
+body.dark .forum-post-title { color: #eee; }
+.forum-post-preview { font-size: 13px; color: #777; line-height: 1.5; }
+body.dark .forum-post-preview { color: #aaa; }
+.forum-post-footer { display: flex; gap: 14px; }
+.forum-post-stat { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #aaa; }
+
+.forum-detail-header { display: flex; align-items: center; gap: 10px; }
+.forum-detail-title { font-size: 17px; font-weight: 700; color: #111; line-height: 1.4; }
+body.dark .forum-detail-title { color: #eee; }
+.forum-detail-content { font-size: 14px; color: #444; line-height: 1.8; background: #f9f9f9; border-radius: 10px; padding: 12px; }
+body.dark .forum-detail-content { background: #333; color: #ccc; }
+.forum-like-btn { display: flex; align-items: center; gap: 4px; background: #fff0f0; border: none; border-radius: 20px; padding: 5px 12px; font-size: 13px; color: #e53e3e; cursor: pointer; margin-left: auto; flex-shrink: 0; }
+body.dark .forum-like-btn { background: #2a1a1a; }
+
+.forum-replies { display: flex; flex-direction: column; gap: 10px; max-height: 240px; overflow-y: auto; }
+.forum-replies-title { font-size: 13px; font-weight: 600; color: #888; }
+.forum-reply-empty { font-size: 13px; color: #bbb; text-align: center; padding: 12px 0; }
+.forum-reply-item { display: flex; gap: 10px; }
+.forum-reply-body { flex: 1; background: #f9f9f9; border-radius: 10px; padding: 10px 12px; }
+body.dark .forum-reply-body { background: #333; }
+.forum-reply-author { font-size: 12px; font-weight: 600; color: #555; margin-bottom: 3px; }
+body.dark .forum-reply-author { color: #aaa; }
+.forum-reply-time { font-size: 10px; color: #bbb; font-weight: 400; margin-left: 6px; }
+.forum-reply-content { font-size: 13px; color: #333; line-height: 1.5; }
+body.dark .forum-reply-content { color: #ccc; }
+
+.forum-reply-input-area { display: flex; flex-direction: column; gap: 0; border-top: 1px solid #f0f0f0; padding-top: 10px; }
+body.dark .forum-reply-input-area { border-top-color: #333; }
+.forum-send-reply-btn { width: 44px; height: 44px; border-radius: 12px; border: none; background: #111; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; align-self: flex-end; }
+.forum-send-reply-btn i { width: 18px; height: 18px; }
+body.dark .forum-send-reply-btn { background: #eee; color: #111; }
+
+.modal-mask { position: fixed; inset: 0; background: transparent; z-index: 300; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.modal-box { background: #fff; border-radius: 20px; padding: 24px; width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); max-height: 85vh; overflow-y: auto; }
+body.dark .modal-box { background: #2a2a2a; }
+.modal-title { font-size: 17px; font-weight: 700; color: #111; text-align: center; }
+body.dark .modal-title { color: #eee; }
+.modal-item { display: flex; flex-direction: column; gap: 5px; }
+.modal-item label { font-size: 13px; color: #555; font-weight: 500; }
+body.dark .modal-item label { color: #aaa; }
+.modal-input { border: 1.5px solid #e5e5ea; border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; color: #111; background: #f9f9f9; width: 100%; }
+.modal-input:focus { border-color: #888; }
+body.dark .modal-input { background: #333; border-color: #444; color: #eee; }
+.modal-textarea { border: 1.5px solid #e5e5ea; border-radius: 10px; padding: 10px 12px; font-size: 13px; outline: none; color: #111; background: #f9f9f9; resize: vertical; min-height: 80px; font-family: inherit; width: 100%; }
+.modal-textarea:focus { border-color: #888; }
+body.dark .modal-textarea { background: #333; border-color: #444; color: #eee; }
+.modal-btns { display: flex; gap: 10px; margin-top: 4px; }
+.modal-btn { flex: 1; padding: 12px; border-radius: 12px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.modal-btn.confirm { background: #111; color: #fff; }
+.modal-btn.confirm:hover { opacity: 0.85; }
+.modal-btn.cancel { background: #f2f2f7; color: #555; }
+.modal-btn.cancel:hover { background: #e5e5ea; }
+body.dark .modal-btn.cancel { background: #333; color: #aaa; }
+.modal-enter-active, .modal-leave-active { transition: opacity 0.2s, transform 0.2s; }
+.modal-enter-from, .modal-leave-to { opacity: 0; transform: scale(0.95); }

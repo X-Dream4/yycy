@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>聊天</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="notify.js"></script>
+<link rel="stylesheet" href="chat.css" />
+</head>
+<body>
+<div id="chat-app" v-cloak>
+
+  <!-- 顶部栏 -->
+  <div class="chat-topbar">
+    <div class="topbar-left">
+      <button class="circle-btn" @click="toggleMenu" ref="menuBtnRef">
+        <i data-lucide="plus"></i>
+      </button>
+      <div class="dropdown-menu" v-if="menuOpen">
+        <div class="dropdown-item" @click="openConnectChar">
+          <i data-lucide="link"></i>
+          <span>连接异次元</span>
+        </div>
+        <div class="dropdown-item" @click="openConnectRoom">
+          <i data-lucide="users"></i>
+          <span>连接聊天室</span>
+        </div>
+        <div class="dropdown-item" @click="goRandom">
+          <i data-lucide="shuffle"></i>
+          <span>异次元随连</span>
+        </div>
+        <div class="dropdown-item" @click="goToWorldbook">
+          <i data-lucide="book-open"></i>
+          <span>世界书馆</span>
+        </div>
+        <div class="dropdown-item" onclick="location.href='moments.html'">
+          <i data-lucide="layout-list"></i>
+          <span>动态</span>
+        </div>
+        <div class="dropdown-item" onclick="location.href='char-world.html'">
+          <i data-lucide="smartphone"></i>
+          <span>角色世界</span>
+        </div>
+        <div class="dropdown-item" @click="goBack">
+          <i data-lucide="arrow-left"></i>
+          <span>返回主页</span>
+        </div>
+      </div>
+    </div>
+    <div class="topbar-title"> </div>
+<button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+
+  </div>
+
+  <!-- 主内容区 -->
+  <div class="chat-main">
+
+    <!-- 聊天列表面板 -->
+    <div class="panel">
+      <div class="panel-label">聊天</div>
+      <div class="chat-list" v-if="sortedCharList.length">
+        <div class="chat-list-item" v-for="c in sortedCharList" :key="c.id" @click="enterChat(c)"
+          @touchstart="onItemTouchStart(c,'char',$event)" @touchmove="onItemTouchMove" @touchend="onItemTouchEnd"
+          @mousedown="onItemMouseDown(c,'char')" @mouseup="onItemMouseUp"
+          >
+          <div class="chat-avatar" :style="c.avatar ? `background-image:url(${c.avatar})` : ''">
+            <span v-if="!c.avatar">{{ c.name[0] }}</span>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">{{ c.name }}</div>
+            <div class="chat-preview">{{ c.lastMsg || '开始聊天吧...' }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="list-empty" v-else>
+        <i data-lucide="link" style="width:32px;height:32px;color:#ccc;"></i>
+        <span>还没有连接的角色</span>
+      </div>
+    </div>
+
+    <!-- 聊天室面板 -->
+    <div class="panel">
+      <div class="panel-label">聊天室</div>
+      <div class="chat-list" v-if="sortedRoomList.length">
+        <div class="chat-list-item" v-for="r in sortedRoomList" :key="r.id" @click="enterRoom(r)"
+          @touchstart="onItemTouchStart(r,'room',$event)" @touchmove="onItemTouchMove" @touchend="onItemTouchEnd"
+          @mousedown="onItemMouseDown(r,'room')" @mouseup="onItemMouseUp"
+          >
+          <div class="chat-avatar room-avatar">
+            <i data-lucide="users" style="width:20px;height:20px;"></i>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">{{ r.name }}</div>
+            <div class="chat-preview">{{ r.members.map(m=>m.name).join('、') }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="list-empty" v-else>
+        <i data-lucide="users" style="width:32px;height:32px;color:#ccc;"></i>
+        <span>还没有聊天室</span>
+      </div>
+    </div>
+    <!-- 次元聊天面板 -->
+    <div class="panel">
+      <div class="panel-label">次元聊天</div>
+      <div class="chat-list" v-if="sortedRandomList.length">
+        <div class="chat-list-item" v-for="c in sortedRandomList" :key="c.id" @click="enterRandomChat(c)"
+          @touchstart="onItemTouchStart(c,'random',$event)" @touchmove="onItemTouchMove" @touchend="onItemTouchEnd"
+          @mousedown="onItemMouseDown(c,'random')" @mouseup="onItemMouseUp"
+          >
+          <div class="chat-avatar" :style="c.avatar ? `background-image:url(${c.avatar})` : ''">
+            <span v-if="!c.avatar">{{ c.name[0] }}</span>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">{{ c.name }}</div>
+            <div class="chat-preview">{{ c.lastMsg || '开始跨次元聊天吧…' }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="list-empty" v-else>
+        <i data-lucide="compass" style="width:32px;height:32px;color:#ccc;"></i>
+        <span>还没有连接的次元角色</span>
+        <span style="font-size:11px;color:#ccc;">在次元发现页面建立连接</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== 连接异次元弹窗 ===== -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="connectCharShow" @click.self="connectCharShow=false">
+      <div class="modal-box">
+        <div class="modal-title">连接异次元</div>
+        <div class="modal-item">
+          <label>世界观</label>
+          <textarea class="modal-textarea" v-model="newChar.world" placeholder="描述这个角色所在的异次元世界观..."></textarea>
+        </div>
+        <div class="modal-item">
+          <label>备注名</label>
+          <input class="modal-input" v-model="newChar.name" placeholder="给这个角色起个备注名" />
+        </div>
+        <div class="modal-item">
+          <label>角色人设</label>
+          <textarea class="modal-textarea" v-model="newChar.persona" placeholder="描述角色的性格、背景、说话方式..."></textarea>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="connectCharShow=false">取消连接</button>
+          <button class="modal-btn confirm" @click="confirmConnectChar">确认连接</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+
+  <!-- ===== 连接聊天室弹窗 ===== -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="connectRoomShow" @click.self="connectRoomShow=false">
+      <div class="modal-box">
+        <div class="modal-title">连接聊天室</div>
+        <div class="modal-item">
+          <label>聊天室名称</label>
+          <input class="modal-input" v-model="newRoom.name" placeholder="输入聊天室名称" />
+        </div>
+        <div class="modal-item">
+          <label>选择角色</label>
+          <div class="member-list" v-if="charList.length">
+            <div class="member-item" v-for="c in charList" :key="c.id" :class="{selected: newRoom.members.find(m=>m.id===c.id)}" @click="toggleMember(c)">
+              <div class="member-avatar" :style="c.avatar ? `background-image:url(${c.avatar})` : ''">
+                <span v-if="!c.avatar">{{ c.name[0] }}</span>
+              </div>
+              <span>{{ c.name }}</span>
+              <i data-lucide="check" class="check-icon" v-if="newRoom.members.find(m=>m.id===c.id)"></i>
+            </div>
+          </div>
+          <div class="list-empty" v-else>
+            <span>请先连接角色</span>
+          </div>
+        </div>
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="connectRoomShow=false">取消建立</button>
+          <button class="modal-btn confirm" @click="confirmConnectRoom">确认建立</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+  <!-- 长按菜单 -->
+  <transition name="modal">
+    <div class="modal-mask" v-if="pressMenuShow" @click.self="closePressMenu">
+      <div class="modal-box" style="max-width:280px;">
+        <div class="modal-title">{{ pressMenuItem ? pressMenuItem.name : '' }}</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button class="modal-btn confirm" @click="togglePin">
+            {{ pressMenuItem && pressMenuItem.pinned ? '取消置顶' : '置顶' }}
+          </button>
+          <button class="modal-btn cancel" style="color:#e53e3e;" @click="deleteItem">删除</button>
+          <button class="modal-btn cancel" @click="closePressMenu">关闭</button>
+        </div>
+      </div>
+    </div>
+  </transition>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+<div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+  <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+  <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+</div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+<script>
+const _origCreateApp = Vue.createApp;
+if (typeof lucide !== 'undefined') {
+  const _iconObserver = new MutationObserver(() => {
+    clearTimeout(window._iconTimer);
+    window._iconTimer = setTimeout(() => lucide.createIcons(), 30);
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    _iconObserver.observe(document.body, { childList: true, subtree: true });
+    lucide.createIcons();
+  });
+}
+</script>
+<script src="db.js"></script>
+<script src="chat.js"></script>
+</body>
+</html>

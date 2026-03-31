@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>记忆</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="chat.css"/>
+<link rel="stylesheet" href="memory.css"/>
+<link rel="stylesheet" href="chatroom.css"/>
+<style>
+html, body { height: 100%; overflow-y: auto; }
+#memory-app { min-height: 100%; }
+</style>
+
+</head>
+<body>
+<div id="memory-app" v-cloak>
+
+  <!-- 主页面 -->
+  <div v-if="!currentChar" class="memory-page">
+    <div class="chat-topbar">
+      <button class="icon-btn" @click="goBack"><i data-lucide="arrow-left"></i></button>
+      <div class="topbar-title">记忆</div>
+      <button onclick="openQuickNav()" style="width:12px;height:12px;border-radius:50%;background:#555;border:none;cursor:pointer;padding:0;flex-shrink:0;"></button>
+    </div>
+
+    <!-- 全局设置 -->
+    <div class="section-title">全局设置</div>
+    <div class="global-settings">
+      <div class="setting-row">
+        <span>记忆注入总开关</span>
+        <div class="toggle" :class="{on: globalSettings.injectOn}" @click="globalSettings.injectOn=!globalSettings.injectOn; saveGlobalSettings()"></div>
+      </div>
+      <div class="setting-row">
+        <span>主单聊注入条数</span>
+        <input class="setting-input" type="number" v-model="globalSettings.myChatsCount" min="1" max="50" @change="saveGlobalSettings" />
+      </div>
+      <div class="setting-row">
+        <span>群聊注入条数</span>
+        <input class="setting-input" type="number" v-model="globalSettings.groupsCount" min="1" max="20" @change="saveGlobalSettings" />
+      </div>
+      <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
+        <span>说明</span>
+        <span style="font-size:11px;color:#aaa;">记忆在私聊/小群生成时自动写入，无需额外API调用。注入按score从高到低排序。</span>
+      </div>
+    </div>
+
+    <!-- 角色列表 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 6px;">
+      <span style="font-size:11px;font-weight:700;color:#aaa;letter-spacing:0.5px;text-transform:uppercase;">角色记忆</span>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#555;cursor:pointer;" @click="toggleShowAllChars">
+        <span>显示所有角色</span>
+        <div style="position:relative;width:36px;height:22px;border-radius:11px;transition:background 0.2s;flex-shrink:0;" :style="showAllChars?'background:#111;':'background:#e0e0e0;'">
+          <div style="position:absolute;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:left 0.2s;" :style="showAllChars?'left:17px;':'left:3px;'"></div>
+        </div>
+      </div>
+    </div>
+    <div style="background:#fff;">
+      <div class="char-item" v-for="char in charsWithMemory" :key="char.id" @click="openCharDetail(char)">
+        <div class="char-avatar" :style="char.avatar ? `background-image:url(${char.avatar})` : ''">
+          <span v-if="!char.avatar">{{ char.name[0] }}</span>
+        </div>
+        <div class="char-info">
+          <div class="char-name">{{ char.name }}</div>
+          <div class="char-sub">{{ char.memoryCount }} 条记忆</div>
+        </div>
+        <i data-lucide="chevron-right" style="width:16px;height:16px;color:#ccc;"></i>
+      </div>
+      <div class="empty-tip" v-if="!charsWithMemory.length">暂无记忆数据</div>
+    </div>
+  </div>
+
+  <!-- 角色记忆详情页 -->
+  <div v-else class="detail-page">
+    <div class="detail-topbar">
+      <button class="icon-btn" @click="currentChar=null; refreshIcons()"><i data-lucide="arrow-left"></i></button>
+      <div class="detail-title">{{ currentChar.name }} 的记忆</div>
+      <div style="width:36px;"></div>
+    </div>
+
+    <!-- 大分类列表 -->
+    <div style="margin-top:8px;">
+      <div class="section-title">私聊 / 小群分类</div>
+
+      <div v-for="group in currentCharGroups" :key="group.groupKey" class="group-section">
+        <div class="group-header" @click="toggleGroupExpand(group.groupKey)">
+          <span class="group-tag" :class="group.type==='private'?'private':'mini'">{{ group.type==='private'?'私聊':'小群' }}</span>
+          <div style="flex:1;">
+            <div class="group-name">{{ group.name }}</div>
+            <div class="group-inject-info">注入到：{{ getInjectSummary(group) }}</div>
+          </div>
+          <button class="inject-edit-btn" @click.stop="openInjectEdit(group, null)">编辑注入</button>
+          <i :data-lucide="expandedGroups.includes(group.groupKey)?'chevron-up':'chevron-down'" style="width:14px;height:14px;color:#aaa;margin-left:6px;"></i>
+        </div>
+
+        <!-- 该分类下的记忆条目 -->
+        <div v-if="expandedGroups.includes(group.groupKey)">
+          <div v-for="mem in getMemoriesByGroup(group.groupKey)" :key="mem.id"
+            class="memory-item" :class="{hidden: mem.hidden}">
+            <div class="memory-summary">{{ mem.summary }}</div>
+            <div class="memory-meta">
+              <span class="memory-badge">{{ mem.type==='private'?'私聊':'小群' }}</span>
+              <span class="memory-badge" v-if="mem.withWho">与 {{ mem.withWho }}</span>
+              <span class="memory-badge" v-if="mem.sourceFrom">来自 {{ mem.sourceFrom }}</span>
+              <span class="memory-badge">{{ formatTime(mem.time) }}</span>
+              <span class="memory-badge" v-if="mem.hidden" style="color:#e53e3e;">已隐藏</span>
+              <span class="memory-badge" v-if="mem.injectOverride" style="color:#2196f3;">单独注入</span>
+            </div>
+            <div class="score-bar-wrap">
+              <div class="score-bar">
+                <div class="score-bar-fill" :style="`width:${mem.score*100}%`"></div>
+              </div>
+              <span class="score-label">{{ mem.score.toFixed(2) }}</span>
+            </div>
+            <div class="memory-actions">
+              <button class="mem-btn" @click="openEditMemory(mem)">编辑</button>
+              <button class="mem-btn" @click="toggleHideMemory(mem)">{{ mem.hidden?'显示':'隐藏' }}</button>
+              <button class="mem-btn" @click="openInjectEdit(group, mem)">注入目标</button>
+              <button class="mem-btn danger" @click="deleteMemory(mem)">删除</button>
+            </div>
+          </div>
+          <div class="empty-tip" v-if="!getMemoriesByGroup(group.groupKey).length">暂无记忆</div>
+        </div>
+      </div>
+
+      <div class="empty-tip" v-if="!currentCharGroups.length">暂无私聊/小群记忆</div>
+    </div>
+
+    <!-- 新增记忆按钮 -->
+    <button class="fab-btn" @click="openAddMemory"><i data-lucide="plus"></i></button>
+  </div>
+
+  <!-- 注入目标编辑弹窗 -->
+  <div class="inject-modal" v-if="injectEditShow" @click.self="injectEditShow=false">
+    <div class="inject-modal-box">
+      <div class="inject-modal-title">
+        {{ injectEditTarget ? '单条记忆注入目标' : '分类注入目标' }}
+      </div>
+      <div v-if="injectEditTarget" style="font-size:12px;color:#aaa;text-align:center;margin-bottom:8px;">
+        设置后此条记忆单独覆盖分类设置
+      </div>
+      <div v-if="injectEditTarget" style="display:flex;justify-content:center;margin-bottom:10px;">
+        <button class="mem-btn" @click="clearInjectOverride">恢复继承分类设置</button>
+      </div>
+
+      <div class="inject-section-label">主单聊</div>
+      <div class="inject-option" v-for="char in allChars" :key="char.id" @click="toggleInjectMyChat(char.id)">
+        <div class="inject-check" :class="{checked: isInjectMyChatSelected(char.id)}">
+          <div class="inject-check-inner" v-if="isInjectMyChatSelected(char.id)"></div>
+        </div>
+        <div class="inject-option-name">{{ char.name }}</div>
+      </div>
+
+      <div class="inject-section-label">群聊</div>
+      <div class="inject-option" v-for="room in allRooms" :key="room.id" @click="toggleInjectGroup(room.id)">
+        <div class="inject-check" :class="{checked: isInjectGroupSelected(room.id)}">
+          <div class="inject-check-inner" v-if="isInjectGroupSelected(room.id)"></div>
+        </div>
+        <div class="inject-option-name">{{ room.name }}</div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:16px;">
+        <button class="modal-btn cancel" style="flex:1;padding:12px;border-radius:12px;border:none;background:#f2f2f7;color:#555;font-size:14px;font-weight:600;cursor:pointer;" @click="injectEditShow=false">取消</button>
+        <button class="modal-btn confirm" style="flex:1;padding:12px;border-radius:12px;border:none;background:#111;color:#fff;font-size:14px;font-weight:600;cursor:pointer;" @click="saveInjectEdit">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑/新增记忆弹窗 -->
+  <div class="edit-memory-modal" v-if="editMemoryShow" @click.self="editMemoryShow=false">
+    <div class="edit-memory-box">
+      <div style="font-size:16px;font-weight:700;color:#111;text-align:center;">{{ editMemoryIsNew?'新增记忆':'编辑记忆' }}</div>
+
+      <div>
+        <div style="font-size:12px;color:#555;font-weight:500;margin-bottom:4px;">摘要内容</div>
+        <textarea style="width:100%;border:1.5px solid #e5e5ea;border-radius:10px;padding:10px;font-size:14px;min-height:80px;font-family:inherit;background:#f9f9f9;color:#111;resize:none;outline:none;" v-model="editMemoryForm.summary"></textarea>
+      </div>
+
+      <div>
+        <div style="font-size:12px;color:#555;font-weight:500;margin-bottom:4px;">评分 {{ editMemoryForm.score.toFixed(2) }}</div>
+        <input type="range" class="score-slider" min="0" max="1" step="0.01" v-model="editMemoryForm.score" />
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#aaa;">
+          <span>0 普通闲聊</span><span>0.5 较重要</span><span>1.0 极重要</span>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:12px;color:#555;font-weight:500;margin-bottom:4px;">类型</div>
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;padding:8px;border-radius:10px;border:1.5px solid #e5e5ea;text-align:center;cursor:pointer;font-size:13px;"
+            :style="editMemoryForm.type==='private'?'background:#111;color:#fff;border-color:#111;':'background:#f9f9f9;color:#555;'"
+            @click="editMemoryForm.type='private'">私聊</div>
+          <div style="flex:1;padding:8px;border-radius:10px;border:1.5px solid #e5e5ea;text-align:center;cursor:pointer;font-size:13px;"
+            :style="editMemoryForm.type==='miniGroup'?'background:#111;color:#fff;border-color:#111;':'background:#f9f9f9;color:#555;'"
+            @click="editMemoryForm.type='miniGroup'">小群</div>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:12px;color:#555;font-weight:500;margin-bottom:4px;">对象（和谁）</div>
+        <input style="width:100%;border:1.5px solid #e5e5ea;border-radius:10px;padding:10px;font-size:14px;background:#f9f9f9;color:#111;outline:none;" v-model="editMemoryForm.withWho" placeholder="角色名或群名..." />
+      </div>
+
+      <div>
+        <div style="font-size:12px;color:#555;font-weight:500;margin-bottom:4px;">来源群聊（可选）</div>
+        <input style="width:100%;border:1.5px solid #e5e5ea;border-radius:10px;padding:10px;font-size:14px;background:#f9f9f9;color:#111;outline:none;" v-model="editMemoryForm.sourceFrom" placeholder="从哪个群触发..." />
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:4px;">
+        <button style="flex:1;padding:12px;border-radius:12px;border:none;background:#f2f2f7;color:#555;font-size:14px;font-weight:600;cursor:pointer;" @click="editMemoryShow=false">取消</button>
+        <button style="flex:1;padding:12px;border-radius:12px;border:none;background:#111;color:#fff;font-size:14px;font-weight:600;cursor:pointer;" @click="saveEditMemory">保存</button>
+      </div>
+    </div>
+  </div>
+<!-- 快捷跳转弹窗 -->
+<div id="quick-nav-mask" onclick="closeQuickNav()" style="display:none;position:fixed;inset:0;z-index:9999;background:transparent;">
+  <div onclick="event.stopPropagation()" style="position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;max-height:70vh;overflow-y:auto;">
+    <div style="width:36px;height:4px;background:#e0e0e0;border-radius:2px;margin:0 auto 16px;"></div>
+    <div style="font-size:15px;font-weight:700;color:#111;margin-bottom:14px;">快捷跳转</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+      <div onclick="location.href='index.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="home" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">主页</span>
+      </div>
+      <div onclick="location.href='chat.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="message-circle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">聊天</span>
+      </div>
+      <div onclick="location.href='like.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="heart" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">喜欢</span>
+      </div>
+      <div onclick="location.href='world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="globe" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界</span>
+      </div>
+      <div onclick="location.href='collect.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="bookmark" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">收藏</span>
+      </div>
+      <div onclick="location.href='memory.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="brain" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">记忆</span>
+      </div>
+      <div onclick="location.href='random.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="shuffle" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">次元发现</span>
+      </div>
+      <div onclick="location.href='worldbook.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="book-open" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">世界书</span>
+      </div>
+      <div onclick="location.href='forum.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="users" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">论坛</span>
+      </div>
+      <div onclick="location.href='novel.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="file-text" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">小说</span>
+      </div>
+      <div onclick="location.href='manga.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="image" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">漫画</span>
+      </div>
+      <div onclick="location.href='moments.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="layout-list" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">动态</span>
+      </div>
+      <div onclick="location.href='char-world.html'" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 6px;border-radius:14px;background:#f5f5f5;cursor:pointer;">
+        <i data-lucide="smartphone" style="width:22px;height:22px;color:#555;"></i>
+        <span style="font-size:11px;color:#555;font-weight:500;">角色世界</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>
+function openQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) {
+    el.style.display = 'block';
+    const isDark = document.body.classList.contains('dark');
+    const panel = el.querySelector('div[onclick="event.stopPropagation()"]');
+    if (panel) {
+      panel.style.background = isDark ? '#1e1e1e' : '#fff';
+      panel.querySelectorAll('div[style*="background:#f5f5f5"]').forEach(item => {
+        item.style.background = isDark ? '#2a2a2a' : '#f5f5f5';
+      });
+      panel.querySelectorAll('span[style*="color:#555"]').forEach(label => {
+        label.style.color = isDark ? '#ccc' : '#555';
+      });
+      panel.querySelectorAll('div[style*="color:#111"]').forEach(title => {
+        title.style.color = isDark ? '#eee' : '#111';
+      });
+    }
+    if(typeof lucide !== 'undefined') lucide.createIcons();
+  }
+}
+function closeQuickNav() {
+  const el = document.getElementById('quick-nav-mask');
+  if (el) el.style.display = 'none';
+}
+</script>
+
+<script src="db.js"></script>
+<script src="memory.js"></script>
+</body>
+</html>
