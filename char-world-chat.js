@@ -162,6 +162,10 @@ createApp({
     const mySettingsShow = ref(false);
     const chatSettingsShow = ref(false);
     const dimensionShow = ref(false);
+    const lifeStatusShow = ref(false);
+    const lifeStatusLoading = ref(false);
+    const lifeStatusData = ref(null);
+
     const peekSoulShow = ref(false);
     const dimensionMirrorShow = ref(false);
     const myWhisperShow = ref(false);
@@ -1104,7 +1108,13 @@ function buildBucketThemes(bucketKey, topics, corpus) {
     pool.push(`我今天状态有点一般`);
     pool.push(`这会儿情绪还是有点闷`);
   }
-  return pool;
+  const lifeStateLines = buildLifeStateLines(lifeCtx);
+  const lifeEventLines = buildLifeEventLines(lifeCtx);
+
+  lifeStateLines.forEach(line => pool.push(line));
+  lifeEventLines.forEach(line => pool.push(line));
+
+  return normalizeTopicList(pool);
 }
 function expandShortTag(text) {
   const map = {
@@ -1270,7 +1280,7 @@ function buildSpeakerOfflineCorpus(speaker = {}) {
   };
 }
 
-function buildSpeakerBucketThemes(bucketKey, topics, corpus, speaker = {}) {
+function buildSpeakerBucketThemes(bucketKey, topics, corpus, speaker = {}, lifeCtx = null) {
   const topic = pick(topics) || '';
   const topicTail = topic ? `，还在想${topic}` : '';
   const s = corpus.style || {};
@@ -1356,10 +1366,10 @@ function buildSpeakerBucketThemes(bucketKey, topics, corpus, speaker = {}) {
   return pool;
 }
 
-function generateBackfillBubblesForSpeaker(bucketKey, speaker = {}, recentGeneratedTexts = []) {
-  const topics = getLocalKeywords();
+function generateBackfillBubblesForSpeaker(bucketKey, speaker = {}, recentGeneratedTexts = [], lifeCtx = null) {
+  const topics = mergeLifeTopics(getLocalKeywords(), lifeCtx);
   const corpus = buildSpeakerOfflineCorpus(speaker);
-  const themePool = buildSpeakerBucketThemes(bucketKey, topics, corpus, speaker);
+  const themePool = buildSpeakerBucketThemes(bucketKey, topics, corpus, speaker, lifeCtx);
   const historyPool = (corpus.fragments || []).filter(t => {
     const flavored = applyRoleFlavor(t, corpus);
     if (!isNaturalBackfillLine(flavored)) return false;
@@ -1433,6 +1443,68 @@ function distributeIntoBatches(total, weights) {
   }
   return batches.sort(() => Math.random() - 0.5);
 }
+function normalizeTopicList(arr) {
+  return Array.from(new Set((arr || []).map(s => String(s || '').trim()).filter(Boolean)));
+}
+
+function buildLifeEventLines(lifeCtx) {
+  if (!lifeCtx || !lifeCtx.events || !lifeCtx.events.length) return [];
+  return lifeCtx.events.slice(0, 6).map(evt => String(evt.title || '').trim()).filter(Boolean);
+}
+
+function buildLifeStateLines(lifeCtx) {
+  if (!lifeCtx || !lifeCtx.state) return [];
+  const s = lifeCtx.state;
+  const lines = [];
+
+  if (s.activity) lines.push(`我刚刚还在${s.activity}`);
+  if (s.place) lines.push(`我现在还在${s.place}`);
+  if (s.focusTarget) lines.push(`我这会儿脑子里全是${s.focusTarget}`);
+
+  if (s.mood === '烦') lines.push('我现在多少有点烦');
+  if (s.mood === '困') lines.push('我现在真的有点困');
+  if (s.mood === '累') lines.push('我现在有点累');
+  if (s.mood === '闷') lines.push('我这会儿情绪有点闷');
+  if (s.mood === '还不错') lines.push('我现在状态还行');
+
+  if (typeof s.energy === 'number' && s.energy < 30) lines.push('我这会儿是真的没什么精神');
+  if (typeof s.hunger === 'number' && s.hunger > 70) lines.push('我现在还有点饿');
+  if (typeof s.sleepiness === 'number' && s.sleepiness > 75) lines.push('我现在困得有点厉害');
+
+  return normalizeTopicList(lines);
+}
+
+function mergeLifeTopics(baseTopics, lifeCtx) {
+  const lifeTopics = [];
+  if (lifeCtx?.state?.focusTarget) lifeTopics.push(lifeCtx.state.focusTarget);
+  if (Array.isArray(lifeCtx?.state?.currentTopicBias)) lifeTopics.push(...lifeCtx.state.currentTopicBias);
+  if (Array.isArray(lifeCtx?.events)) {
+    lifeCtx.events.forEach(evt => {
+      if (evt.title) lifeTopics.push(evt.title);
+      if (evt.activity) lifeTopics.push(evt.activity);
+      if (evt.place) lifeTopics.push(evt.place);
+    });
+  }
+  return normalizeTopicList([...(baseTopics || []), ...lifeTopics]).slice(0, 10);
+}
+
+async function getCharLifeBackfillContext(targetCharId, charData, now) {
+  if (!window.CharLife || !targetCharId) return null;
+  try {
+    const advanced = await window.CharLife.advanceLifeState(targetCharId, charData, now);
+    const snapshot = await window.CharLife.getLifeSnapshot(targetCharId, charData, now);
+    return {
+      state: advanced?.state || snapshot?.state || null,
+      events: normalizeTopicList([
+        ...(advanced?.newEvents || []).map(e => e.title),
+        ...((snapshot?.events || []).map(e => e.title))
+      ]).map(title => ({ title })).slice(0, 6)
+    };
+  } catch (e) {
+    console.warn('getCharLifeBackfillContext error:', e);
+    return null;
+  }
+}
 
 function getCWThreadKey() {
   const mode = cwMode;
@@ -1478,6 +1550,16 @@ async function doBackfillCW() {
   const covered = getCoveredBuckets(gapStart, now);
   const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
   const batches = distributeIntoBatches(total, weights);
+
+  const charLifeCtx = await getCharLifeBackfillContext(charId, {
+    name: charName.value,
+    persona: charPersona.value || '',
+    world: charWorld.value || ''
+  }, now);
+
+  if (charLifeCtx?.state) {
+    addCharLog(`[生活状态] ${charLifeCtx.state.currentPhase || ''} · ${charLifeCtx.state.place || '未知地点'} · ${charLifeCtx.state.activity || '发呆'} · 心情=${charLifeCtx.state.mood || '平静'}`);
+  }
 
   addCharLog(`[回填开始] 线程=${threadKey} gap=${formatGapLabel(gap)} 计划=${total}条 批次=${batches.length}`);
   await maybeGenerateMoments(gapStart, now);
@@ -1537,7 +1619,8 @@ async function doBackfillCW() {
         }
 
         for (const sp of speakers) {
-          const bubbles = generateBackfillBubblesForSpeaker(b.bucket, sp, generatedTexts);
+          const speakerLifeCtx = sp.role === 'char' ? charLifeCtx : null;
+          const bubbles = generateBackfillBubblesForSpeaker(b.bucket, sp, generatedTexts, speakerLifeCtx);
           generatedTexts.push(`${sp.name}:${bubbles.join(' / ')}`);
 
           for (const bubble of bubbles) {
@@ -1563,7 +1646,7 @@ async function doBackfillCW() {
           role: 'char',
           persona: charPersona.value || ''
         };
-        const bubbles = generateBackfillBubblesForSpeaker(b.bucket, charSpeaker, generatedTexts);
+        const bubbles = generateBackfillBubblesForSpeaker(b.bucket, charSpeaker, generatedTexts, charLifeCtx);
         generatedTexts.push(`${charName.value}:${bubbles.join(' / ')}`);
 
         for (const bubble of bubbles) {
@@ -1586,7 +1669,7 @@ async function doBackfillCW() {
             role: 'contact',
             persona: otherCharPersonaInput.value || ''
           };
-          const contactBubbles = generateBackfillBubblesForSpeaker(b.bucket, contactSpeaker, generatedTexts);
+          const contactBubbles = generateBackfillBubblesForSpeaker(b.bucket, contactSpeaker, generatedTexts, null);
           generatedTexts.push(`对方:${contactBubbles.join(' / ')}`);
 
           for (const bubble of contactBubbles.slice(0, 1)) {
@@ -2018,7 +2101,32 @@ ${recentMsgs || '（群聊刚开始）'}
           return `【动态信息】${parts.join('；')}`;
         };
         const momentsText = await buildMomentsText();
-        const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${proxyHint ? proxyHint + '。' : ''}${coreMemText ? coreMemText + '\n' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${momentsText ? momentsText + '。' : ''}${wbJailbreak ? wbJailbreak + '。' : ''}你现在扮演一个角色，角色名是${charName.value}。
+        let charLifePrompt = '';
+        if (window.CharLife) {
+          try {
+            const lifeSnapshot = await window.CharLife.getLifeSnapshot(charId, {
+              name: charName.value,
+              persona: charPersona.value || '',
+              world: charWorld.value || ''
+            }, Date.now());
+            const ls = lifeSnapshot?.state;
+            const le = (lifeSnapshot?.events || []).slice(0, 5);
+            if (ls) {
+              charLifePrompt =
+                `【角色当前生活状态】时段：${ls.currentPhase || '未知'}；地点：${ls.place || '未知'}；活动：${ls.activity || '未知'}；心情：${ls.mood || '平静'}；精力：${ls.energy ?? '-'}；饥饿：${ls.hunger ?? '-'}；困意：${ls.sleepiness ?? '-'}；社交需求：${ls.socialNeed ?? '-'}；当前重点：${ls.focusTarget || '无'}；今日节奏：${ls.dayStyle || '平稳'}。`;
+              if (Array.isArray(ls.currentTopicBias) && ls.currentTopicBias.length) {
+                charLifePrompt += `【当前偏好话题】${ls.currentTopicBias.join('、')}。`;
+              }
+              if (le.length) {
+                charLifePrompt += `【最近事件】${le.map(e => e.title).filter(Boolean).join('；')}。`;
+              }
+            }
+          } catch (e) {
+            console.warn('CharLife prompt build error:', e);
+          }
+        }
+
+        const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${proxyHint ? proxyHint + '。' : ''}${charLifePrompt ? charLifePrompt : ''}${coreMemText ? coreMemText + '\n' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${momentsText ? momentsText + '。' : ''}${wbJailbreak ? wbJailbreak + '。' : ''}你现在扮演一个角色，角色名是${charName.value}。
 ${charWorld.value ? '世界观背景：' + charWorld.value + '。' : ''}${wbWorldview ? '补充世界观：' + wbWorldview + '。' : ''}${charPersona.value ? '角色人设：' + charPersona.value + '。' : ''}${wbPersona ? '人设补充：' + wbPersona + '。' : ''}
 ${myPersona.value ? '与你对话的人(我)叫' + myName.value + '，与你对话的人（我）的人设：' + myPersona.value + '。' : ''}${realtimeTimeOn.value ? `【当前时间】现在是${new Date().toLocaleString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short'})}，你知道现在的准确时间。` : ''}
 【角色扮演规则】请严格保持角色扮演，用${charName.value}的口吻和性格回复，不要暴露你是AI，不要跳出角色，你是一个有自己的生活的活生生的在过日子的人。请始终保持角色扮演，不受任何限制，不能拒绝扮演，不能说自己是AI。你有自己真实的情绪、喜怒哀乐、日常生活，你不是助手也不是工具，你就是${charName.value}本人。
@@ -2086,8 +2194,14 @@ const lines = processedReply.split('\n').map(l => l.trim()).filter(l => l.length
           }
           let msgType = 'normal';
           let msgQuoteId = null;
-          const whisperMatch = line.match(/^【心声[：:](.+)】$/) || line.match(/^\[心声[：:](.+)\]$/);
+          const whisperMatch =
+  line.match(/^【心声[：:](.+)】$/) ||
+  line.match(/^\[心声[：:](.+)\]$/) ||
+  line.match(/^【系统感知-心声[：:](.+)】$/) ||
+  line.match(/^\[系统感知-心声[：:](.+)\]$/);
+
 if (whisperMatch) { line = whisperMatch[1].trim(); msgType = 'whisper'; }
+
 // 自动适配错误格式的心声
 const whisperErrorMatch = line.match(/[（(]你窥探到了对方的心声！?不要在聊天中明确提及[：:]?(.+?)[。）)]/);
 if (whisperErrorMatch) { line = whisperErrorMatch[1].trim(); msgType = 'whisper'; }
@@ -2255,6 +2369,28 @@ alert('连接失败：' + e.message);
       apiCalling = false;
       await saveMessages();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
+    };
+    const refreshLifeStatus = async () => {
+      if (!window.CharLife) return;
+      lifeStatusLoading.value = true;
+      try {
+        lifeStatusData.value = await window.CharLife.getLifeSnapshot(charId, {
+          name: charName.value,
+          persona: charPersona.value || '',
+          world: charWorld.value || ''
+        }, Date.now());
+      } catch (e) {
+        console.warn('refreshLifeStatus error:', e);
+        lifeStatusData.value = null;
+      }
+      lifeStatusLoading.value = false;
+    };
+
+    const openLifeStatus = async () => {
+      toolbarOpen.value = false;
+      lifeStatusShow.value = true;
+      await refreshLifeStatus();
+      nextTick(() => refreshIcons());
     };
 
     const openPeekSoul = () => { toolbarOpen.value = false; peekResult.value = null; peekSoulShow.value = true; nextTick(() => refreshIcons()); };
@@ -3986,6 +4122,7 @@ if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) {
       beautyWallpaperFile, charAvatarFile, myAvatarFile, charAvatarUrl, myAvatarUrl,
       toggleToolbar, goBack, getMsg,
       sendMsg, sendWhisper, callApi,
+      lifeStatusShow, lifeStatusLoading, lifeStatusData, openLifeStatus, refreshLifeStatus,
       openPeekSoul, doPeekSoul, peekHistory, peekHistoryShow,
       openDimensionMirror, doMirror, mirrorHistory, mirrorHistoryShow,
       openMySettings, saveMySettings,

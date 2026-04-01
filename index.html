@@ -7,6 +7,57 @@
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script src="notify.js"></script>
 <link rel="stylesheet" href="style.css" />
+<style>
+#shell-root {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #f5f5f7;
+  display: none;
+}
+#shell-root.show {
+  display: flex;
+  flex-direction: column;
+}
+.shell-topbar {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  flex-shrink: 0;
+}
+.shell-back-btn {
+  border: none;
+  background: #111;
+  color: #fff;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.shell-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#shell-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+body.shell-open {
+  overflow: hidden;
+}
+</style>
+
 </head>
 <body>
 <div id="app" v-cloak>
@@ -24,7 +75,7 @@
 
   <div class="transparent-block">
     <div class="row">
-      <div class="app-btn" @click="onApp('chat')">
+      <div class="app-btn" data-app-key="chat" @click="onApp('chat')">
         <div class="app-icon-wrap">
           <img v-if="appsRow1[0].icon" class="app-icon-img" :src="appsRow1[0].icon" :alt="appsRow1[0].label" />
           <div v-else class="app-icon-placeholder">图标</div>
@@ -40,7 +91,7 @@
       <polaroid-card :polaroid-style="polaroidStyle" :images="images" @open-picker="openPicker"></polaroid-card>
       <div class="app-group-col" style="margin-left:auto">
         <div class="app-row">
-          <div class="app-btn" v-for="btn in appsRow2" :key="btn.key" @click="onApp(btn.key)">
+          <div class="app-btn" v-for="btn in appsRow2" :key="btn.key" :data-app-key="btn.key" @click="onApp(btn.key)">
             <div class="app-icon-wrap">
               <img v-if="btn.icon" class="app-icon-img" :src="btn.icon" :alt="btn.label" />
               <div v-else class="app-icon-placeholder">图标</div>
@@ -49,7 +100,7 @@
           </div>
         </div>
         <div class="app-row">
-          <div class="app-btn" v-for="btn in appsRow3" :key="btn.key" @click="onApp(btn.key)">
+          <div class="app-btn" v-for="btn in appsRow3" :key="btn.key" :data-app-key="btn.key" @click="onApp(btn.key)">
             <div class="app-icon-wrap">
               <img v-if="btn.icon" class="app-icon-img" :src="btn.icon" :alt="btn.label" />
               <div v-else class="app-icon-placeholder">图标</div>
@@ -65,6 +116,16 @@
 
   <input type="file" ref="fileInput" accept="image/*" @change="onFileChange" />
 </div>
+
+<div id="shell-root" aria-hidden="true">
+  <div class="shell-topbar">
+    <button class="shell-back-btn" id="shellBackBtn">返回桌面</button>
+    <div class="shell-title" id="shellTitle">应用</div>
+  </div>
+  <div id="shell-module" style="flex:1;display:none;background:#fff;overflow:hidden;"></div>
+  <iframe id="shell-frame" src="about:blank" style="display:none;"></iframe>
+</div>
+
 <script>
 const _origCreateApp = Vue.createApp;
 if (typeof lucide !== 'undefined') {
@@ -79,6 +140,9 @@ if (typeof lucide !== 'undefined') {
 }
 </script>
 <script src="db.js"></script>
+<script src="life-core.js"></script>
+<script src="chat-app-view.js"></script>
+<script src="app-shell.js"></script>
 <script src="app.js"></script>
 <script src="components.js"></script>
 </body>

@@ -141,6 +141,7 @@
       <button class="toolbar-btn" @click="openChatSettings"><i data-lucide="settings-2"></i><span>聊天设置</span></button>
       <button class="toolbar-btn" @click="openDimensionLink"><i data-lucide="link-2"></i><span>次元链接</span></button>
       <button class="toolbar-btn" @click="openMySettings"><i data-lucide="user"></i><span>我的设置</span></button>
+      <button class="toolbar-btn" @click="openLifeStatus"><i data-lucide="activity"></i><span>角色近况</span></button>
       <button class="toolbar-btn" @click="openPeekSoul"><i data-lucide="eye"></i><span>窥探心声</span></button>
       <button class="toolbar-btn" @click="openDimensionMirror"><i data-lucide="monitor"></i><span>次元时境</span></button>
       <button class="toolbar-btn" @click="openMyWhisper"><i data-lucide="message-circle"></i><span>我的心声</span></button>
@@ -543,6 +544,57 @@
           <button class="modal-btn cancel" style="margin-top:6px;font-size:12px;padding:8px;" @click="charConsoleLogs=[];dbSet('charLogs_'+charId,[])">清空日志</button>
         </div>
         <div class="modal-btns"><button class="modal-btn cancel" @click="dimensionShow=false">关闭</button></div>
+      </div>
+    </div>
+  </transition>
+  <transition name="modal">
+    <div class="modal-mask" v-if="lifeStatusShow && appReady" @click.self="lifeStatusShow=false">
+      <div class="modal-box">
+        <div class="modal-title">角色近况</div>
+
+        <div v-if="lifeStatusLoading" class="peek-loading"><span></span><span></span><span></span></div>
+
+        <div v-else-if="lifeStatusData">
+          <div class="dimension-info">
+            <div class="dimension-row"><span>当前时段</span><span>{{ lifeStatusData.state?.currentPhase || '未知' }}</span></div>
+            <div class="dimension-row"><span>当前位置</span><span>{{ lifeStatusData.state?.place || '未知' }}</span></div>
+            <div class="dimension-row"><span>当前活动</span><span>{{ lifeStatusData.state?.activity || '未知' }}</span></div>
+            <div class="dimension-row"><span>当前心情</span><span>{{ lifeStatusData.state?.mood || '平静' }}</span></div>
+            <div class="dimension-row"><span>精力</span><span>{{ lifeStatusData.state?.energy ?? '-' }}</span></div>
+            <div class="dimension-row"><span>饥饿</span><span>{{ lifeStatusData.state?.hunger ?? '-' }}</span></div>
+            <div class="dimension-row"><span>困意</span><span>{{ lifeStatusData.state?.sleepiness ?? '-' }}</span></div>
+            <div class="dimension-row"><span>社交需求</span><span>{{ lifeStatusData.state?.socialNeed ?? '-' }}</span></div>
+            <div class="dimension-row"><span>当前重点</span><span>{{ lifeStatusData.state?.focusTarget || '无' }}</span></div>
+            <div class="dimension-row"><span>今日节奏</span><span>{{ lifeStatusData.state?.dayStyle || '平稳' }}</span></div>
+          </div>
+
+          <div class="modal-item" v-if="lifeStatusData.state?.currentTopicBias?.length">
+            <label>当前偏好话题</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">
+              <div v-for="(topic, i) in lifeStatusData.state.currentTopicBias" :key="i" style="padding:5px 10px;border-radius:16px;background:#f2f2f7;font-size:12px;color:#555;">
+                {{ topic }}
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-item">
+            <label>最近事件</label>
+            <div v-if="lifeStatusData.events?.length" style="display:flex;flex-direction:column;gap:8px;">
+              <div v-for="evt in lifeStatusData.events.slice(0,5)" :key="evt.id || evt.time || evt.title" style="padding:10px 12px;background:#f9f9f9;border-radius:10px;">
+                <div style="font-size:13px;color:#333;line-height:1.6;">{{ evt.title || '无标题事件' }}</div>
+                <div style="font-size:11px;color:#aaa;margin-top:4px;">{{ evt.phase || '' }} {{ evt.place ? '· '+evt.place : '' }} {{ evt.activity ? '· '+evt.activity : '' }}</div>
+              </div>
+            </div>
+            <div v-else class="console-empty">暂无事件</div>
+          </div>
+        </div>
+
+        <div v-else class="console-empty">暂无近况数据</div>
+
+        <div class="modal-btns">
+          <button class="modal-btn cancel" @click="lifeStatusShow=false">关闭</button>
+          <button class="modal-btn confirm" @click="refreshLifeStatus">刷新</button>
+        </div>
       </div>
     </div>
   </transition>
@@ -1641,6 +1693,7 @@ if (typeof lucide !== 'undefined') {
 }
 </script>
 <script src="db.js"></script>
+<script src="life-core.js"></script>
 <script src="emoji.js"></script>
 <script src="chatroom.js"></script>
 </body>

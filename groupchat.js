@@ -153,6 +153,10 @@ createApp({
     const mySettingsShow = ref(false);
     const chatSettingsShow = ref(false);
     const memberSettingsShow = ref(false);
+    const lifeStatusShow = ref(false);
+    const lifeStatusLoading = ref(false);
+    const lifeStatusList = ref([]);
+
     const dimensionShow = ref(false);
     const peekSoulShow = ref(false);
     const dimensionMirrorShow = ref(false);
@@ -675,7 +679,7 @@ function buildMemberOfflineCorpus(member) {
     style: extractPersonaStyle(member.persona || '')
   };
 }
-function buildMemberBucketThemes(bucketKey, topics, corpus, member) {
+function buildMemberBucketThemes(bucketKey, topics, corpus, member, lifeCtx = null) {
   const topic = pick(topics) || '';
   const topicTail = topic ? `，还在想${topic}` : '';
   const s = corpus.style || {};
@@ -714,7 +718,13 @@ function buildMemberBucketThemes(bucketKey, topics, corpus, member) {
     pool.push('我今天状态有点一般');
     pool.push('这会儿情绪还是有点闷');
   }
-  return pool;
+  const lifeStateLines = buildLifeStateLines(lifeCtx);
+  const lifeEventLines = buildLifeEventLines(lifeCtx);
+
+  lifeStateLines.forEach(line => pool.push(line));
+  lifeEventLines.forEach(line => pool.push(line));
+
+  return normalizeTopicList(pool);
 }
 function expandShortTag(text) {
   const map = {
@@ -795,10 +805,10 @@ function styleShortBubble(text) {
   }
   return chunks.length ? chunks : [text];
 }
-function generateBackfillBubblesForMember(bucketKey, member, recentGeneratedTexts = []) {
-  const topics = getLocalKeywords();
+function generateBackfillBubblesForMember(bucketKey, member, recentGeneratedTexts = [], lifeCtx = null) {
+  const topics = mergeLifeTopics(getLocalKeywords(), lifeCtx);
   const corpus = buildMemberOfflineCorpus(member);
-  const themePool = buildMemberBucketThemes(bucketKey, topics, corpus, member);
+  const themePool = buildMemberBucketThemes(bucketKey, topics, corpus, member, lifeCtx);
   const historyPool = (corpus.fragments || []).filter(t => {
     const flavored = applyRoleFlavor(t, corpus);
     if (!isNaturalBackfillLine(flavored)) return false;
@@ -865,6 +875,76 @@ function distributeIntoBatches(total, weights) {
   }
   return batches.sort(() => Math.random() - 0.5);
 }
+function normalizeTopicList(arr) {
+  return Array.from(new Set((arr || []).map(s => String(s || '').trim()).filter(Boolean)));
+}
+
+function buildLifeEventLines(lifeCtx) {
+  if (!lifeCtx || !lifeCtx.events || !lifeCtx.events.length) return [];
+  return lifeCtx.events.slice(0, 6).map(evt => String(evt.title || '').trim()).filter(Boolean);
+}
+
+function buildLifeStateLines(lifeCtx) {
+  if (!lifeCtx || !lifeCtx.state) return [];
+  const s = lifeCtx.state;
+  const lines = [];
+
+  if (s.activity) lines.push(`我刚刚还在${s.activity}`);
+  if (s.place) lines.push(`我现在还在${s.place}`);
+  if (s.focusTarget) lines.push(`我这会儿脑子里全是${s.focusTarget}`);
+
+  if (s.mood === '烦') lines.push('我现在多少有点烦');
+  if (s.mood === '困') lines.push('我现在真的有点困');
+  if (s.mood === '累') lines.push('我现在有点累');
+  if (s.mood === '闷') lines.push('我这会儿情绪有点闷');
+  if (s.mood === '还不错') lines.push('我现在状态还行');
+
+  if (typeof s.energy === 'number' && s.energy < 30) lines.push('我这会儿是真的没什么精神');
+  if (typeof s.hunger === 'number' && s.hunger > 70) lines.push('我现在还有点饿');
+  if (typeof s.sleepiness === 'number' && s.sleepiness > 75) lines.push('我现在困得有点厉害');
+
+  return normalizeTopicList(lines);
+}
+
+function mergeLifeTopics(baseTopics, lifeCtx) {
+  const lifeTopics = [];
+  if (lifeCtx?.state?.focusTarget) lifeTopics.push(lifeCtx.state.focusTarget);
+  if (Array.isArray(lifeCtx?.state?.currentTopicBias)) lifeTopics.push(...lifeCtx.state.currentTopicBias);
+  if (Array.isArray(lifeCtx?.events)) {
+    lifeCtx.events.forEach(evt => {
+      if (evt.title) lifeTopics.push(evt.title);
+      if (evt.activity) lifeTopics.push(evt.activity);
+      if (evt.place) lifeTopics.push(evt.place);
+    });
+  }
+  return normalizeTopicList([...(baseTopics || []), ...lifeTopics]).slice(0, 10);
+}
+
+async function getMemberLifeBackfillContext(member, now) {
+  if (!window.CharLife || !member?.id) return null;
+  try {
+    const advanced = await window.CharLife.advanceLifeState(member.id, {
+      name: member.name || '',
+      persona: member.persona || '',
+      world: member.world || ''
+    }, now);
+    const snapshot = await window.CharLife.getLifeSnapshot(member.id, {
+      name: member.name || '',
+      persona: member.persona || '',
+      world: member.world || ''
+    }, now);
+    return {
+      state: advanced?.state || snapshot?.state || null,
+      events: normalizeTopicList([
+        ...(advanced?.newEvents || []).map(e => e.title),
+        ...((snapshot?.events || []).map(e => e.title))
+      ]).map(title => ({ title })).slice(0, 6)
+    };
+  } catch (e) {
+    console.warn('getMemberLifeBackfillContext error:', e);
+    return null;
+  }
+}
 
 async function doBackfillGroup() {
   const threadKey = `group_${roomId}`;
@@ -899,6 +979,11 @@ async function doBackfillGroup() {
   const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
   const batches = distributeIntoBatches(total, weights);
 
+  const memberLifeMap = {};
+  for (const m of (members.value || [])) {
+    memberLifeMap[m.id] = await getMemberLifeBackfillContext(m, now);
+  }
+
   addRoomLog(`[回填开始] 线程=group_${roomId} gap=${formatGapLabel(gap)} 计划=${total}条 批次=${batches.length}`);
 
   const inserts = [];
@@ -932,7 +1017,12 @@ async function doBackfillGroup() {
     }
 
     for (const sp of speakers) {
-      const bubbles = generateBackfillBubblesForMember(b.bucket, sp, generatedTexts);
+      const bubbles = generateBackfillBubblesForMember(
+        b.bucket,
+        sp,
+        generatedTexts,
+        memberLifeMap[sp.id] || null
+      );
       generatedTexts.push(`${sp.name}:${bubbles.join(' / ')}`);
 
       for (const bubble of bubbles) {
@@ -1154,6 +1244,32 @@ const writeCharMemory = async (targetCharId, memItem) => {
   existing.unshift(memItem);
   if (existing.length > 100) existing.splice(100);
   await dbSet(key, existing);
+};
+const buildGroupLifePrompt = async () => {
+  if (!window.CharLife) return '';
+  try {
+    const lifeLines = [];
+    for (const m of (members.value || [])) {
+      const snap = await window.CharLife.getLifeSnapshot(m.id, {
+        name: m.name || '',
+        persona: m.persona || '',
+        world: m.world || ''
+      }, Date.now());
+
+      const ls = snap?.state;
+      const le = (snap?.events || []).slice(0, 3);
+
+      if (ls) {
+        let line = `【${m.name}当前状态】时段：${ls.currentPhase || '未知'}；地点：${ls.place || '未知'}；活动：${ls.activity || '未知'}；心情：${ls.mood || '平静'}；重点：${ls.focusTarget || '无'}。`;
+        if (le.length) line += `最近事件：${le.map(e => e.title).filter(Boolean).join('；')}。`;
+        lifeLines.push(line);
+      }
+    }
+    return lifeLines.length ? lifeLines.join('\n') : '';
+  } catch (e) {
+    console.warn('buildGroupLifePrompt error:', e);
+    return '';
+  }
 };
 
 // ===== 触发群聊社交行为 =====
@@ -1482,6 +1598,8 @@ ${existingSubGroupMsgsText ? '【小群之前的聊天记录】\n' + existingSub
     const callApi = async () => {
       toolbarOpen.value = false;
       if (!apiConfig.value.url || !apiConfig.value.key || !apiConfig.value.model) { alert('请先在设置里配置API'); return; }
+      
+      const groupLifePrompt = await buildGroupLifePrompt();
 
       const loadingMsg = { id: Date.now(), role: 'char', content: '', type: 'normal', senderName: '...', memberId: null, loading: true, recalled: false, revealed: false };
       allMessages.value.push(loadingMsg); nextTick(() => { scrollToBottom(); refreshIcons(); });
@@ -1572,7 +1690,7 @@ ${existingSubGroupMsgsText ? '【小群之前的聊天记录】\n' + existingSub
 
       const hotAwareText = await buildHotAwareText();
       const novelAwareText = buildNovelAwareText();
-      const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}本群共有${members.value.length}名成员，名单：${memberNames}。${memberMemorySection ? '\n' + memberMemorySection : ''}每条消息必须明确标注发言者名字。${realtimeTimeOn.value ? `【当前时间】现在是${new Date().toLocaleString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short'})}，所有成员都知道现在的准确时间。` : ''}${wbJailbreak ? wbJailbreak + '。' : ''}${wbWorldview ? '补充世界观：' + wbWorldview + '。\n' : ''}${wbPersona ? '补充人设：' + wbPersona + '。\n' : ''}
+      const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${groupLifePrompt ? groupLifePrompt + '\n' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}本群共有${members.value.length}名成员，名单：${memberNames}。${memberMemorySection ? '\n' + memberMemorySection : ''}每条消息必须明确标注发言者名字。
 【群成员信息】
 ${membersDesc}
 ${myPersona.value ? `【用户】(就是我)${myName.value}的人设：${myPersona.value}` : ''}
@@ -1744,8 +1862,14 @@ const lines = processedReply.split('&').map(l => l.trim()).filter(l => l.length 
           let msgQuoteId = null;
 
           // 解析心声
-          const whisperMatch = content.match(/^【心声[：:](.+)】$/);
+          const whisperMatch =
+  content.match(/^【心声[：:](.+)】$/) ||
+  content.match(/^\[心声[：:](.+)\]$/) ||
+  content.match(/^【系统感知-心声[：:](.+)】$/) ||
+  content.match(/^\[系统感知-心声[：:](.+)\]$/);
+
 if (whisperMatch) { content = whisperMatch[1].trim(); msgType = 'whisper'; }
+
 // 自动适配错误格式的心声
 const whisperErrorMatch = content.match(/[（(]你窥探到了对方的心声！?不要在聊天中明确提及[：:]?(.+?)[。）)]/);
 if (whisperErrorMatch) { content = whisperErrorMatch[1].trim(); msgType = 'whisper'; }
@@ -1827,6 +1951,48 @@ alert('连接失败：' + e.message);
       }
       await saveMessages(); nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
+
+const buildGroupLifeStatusList = async () => {
+  if (!window.CharLife) return [];
+  const list = [];
+  for (const m of (members.value || [])) {
+    try {
+      const snap = await window.CharLife.getLifeSnapshot(m.id, {
+        name: m.name || '',
+        persona: m.persona || '',
+        world: m.world || ''
+      }, Date.now());
+
+      list.push({
+        id: m.id,
+        name: m.name,
+        state: snap?.state || null,
+        events: snap?.events || []
+      });
+    } catch (e) {
+      console.warn('buildGroupLifeStatusList item error:', e);
+    }
+  }
+  return list;
+};
+
+const refreshLifeStatus = async () => {
+  lifeStatusLoading.value = true;
+  try {
+    lifeStatusList.value = await buildGroupLifeStatusList();
+  } catch (e) {
+    console.warn('refreshLifeStatus error:', e);
+    lifeStatusList.value = [];
+  }
+  lifeStatusLoading.value = false;
+};
+
+const openLifeStatus = async () => {
+  toolbarOpen.value = false;
+  lifeStatusShow.value = true;
+  await refreshLifeStatus();
+  nextTick(() => refreshIcons());
+};
 
     // 窥探心声
     const openPeekSoul = () => { toolbarOpen.value = false; peekResults.value = []; peekSoulShow.value = true; nextTick(() => refreshIcons()); };
@@ -2668,6 +2834,7 @@ if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) {
       bubbleMenuMsgId, bubbleMenuPos, quotingMsg, multiSelectMode, selectedMsgs,
       toggleToolbar, goBack, getMsg, addRoomLog,
       sendMsg, sendWhisper, callApi,
+      lifeStatusShow, lifeStatusLoading, lifeStatusList, openLifeStatus, refreshLifeStatus,
       openPeekSoul, doPeekSoul, openDimensionMirror, doMirror,
       openMemberSettings, selectMemberToEdit, saveMemberEdit,
       openMySettings, saveMySettings, openChatSettings, saveChatSettings,
@@ -2707,7 +2874,7 @@ collectPeekHistory, collectMirrorHistory, htmlViewWidth, htmlViewHeight, htmlVie
 openPeekHistory, openMirrorHistory,
       deletePeekHistory, deleteMirrorHistory,
 socialCircleOn, socialInjectCount, socialInjectOn, writeCharMemory,
-memorySearchOn,
+memorySearchOn, buildGroupLifePrompt, 
 
     };
   }
