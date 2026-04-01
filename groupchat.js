@@ -481,8 +481,41 @@ const charPickerSelections = ref({});
     const importStickerUrl = async () => { if (!stickerImportCat.value) { alert('请先选择分类'); return; } if (!stickerSingleName2.value.trim() || !stickerSingleUrl.value.trim()) { alert('请填写名字和URL'); return; } const cat = stickerData.value.categories.find(c => c.name === stickerImportCat.value); if (cat) { cat.emojis.push({ name: stickerSingleName2.value.trim(), url: stickerSingleUrl.value.trim() }); await emojiSave(stickerData.value); stickerSingleName2.value = ''; stickerSingleUrl.value = ''; } };
     const importStickerBatch = async () => { if (!stickerImportCat.value) { alert('请先选择分类'); return; } const lines = stickerBatchText.value.split('\n').map(l => l.trim()).filter(l => l); const cat = stickerData.value.categories.find(c => c.name === stickerImportCat.value); if (!cat) return; for (const line of lines) { const sep = line.includes('：') ? '：' : ':'; const idx = line.indexOf(sep); if (idx > 0) { const name = line.slice(0, idx).trim(); const url = line.slice(idx + sep.length).trim(); if (name && url) cat.emojis.push({ name, url }); } } await emojiSave(stickerData.value); stickerBatchText.value = ''; alert('批量导入完成'); };
     const createStickerCat = async () => { if (!stickerNewCatName.value.trim()) return; stickerData.value.categories.push({ name: stickerNewCatName.value.trim(), emojis: [] }); stickerImportCat.value = stickerNewCatName.value.trim(); stickerCurrentCat.value = stickerNewCatName.value.trim(); stickerNewCatName.value = ''; stickerNewCatShow.value = false; await emojiSave(stickerData.value); };
-    const sendStickerFromPanel = async (s) => { emojiShow.value = false; const msg = { id: Date.now(), role: 'user', content: s.name, type: 'sticker', senderName: myName.value, memberId: null, quoteId: null, recalled: false, revealed: false }; allMessages.value.push(msg); await saveMessages(); nextTick(() => { scrollToBottom(); refreshIcons(); }); };
-    const sendSticker = async (s) => { const msg = { id: Date.now(), role: 'user', content: s.name, type: 'sticker', senderName: myName.value, memberId: null, quoteId: null, recalled: false, revealed: false }; allMessages.value.push(msg); await saveMessages(); nextTick(() => { scrollToBottom(); refreshIcons(); }); };
+    const sendStickerFromPanel = async (s) => {
+      emojiShow.value = false;
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: s.name,
+        type: 'sticker',
+        senderName: myName.value,
+        memberId: null,
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
+      allMessages.value.push(msg);
+      await saveMessages();
+      nextTick(() => { scrollToBottom(); refreshIcons(); });
+    };
+    const sendSticker = async (s) => {
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: s.name,
+        type: 'sticker',
+        senderName: myName.value,
+        memberId: null,
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
+      allMessages.value.push(msg);
+      await saveMessages();
+      nextTick(() => { scrollToBottom(); refreshIcons(); });
+    };
 
     // 长按气泡
     const bubbleMenuMsgId = ref(null);
@@ -500,6 +533,196 @@ const charPickerSelections = ref({});
     const getMsg = (id) => allMessages.value.find(m => m.id === id);
 
     const addRoomLog = async (msg, type = 'info') => { const now = new Date(); const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`; roomConsoleLogs.value.unshift({ msg, type, time }); if (roomConsoleLogs.value.length > 100) roomConsoleLogs.value.splice(100); await dbSet(`roomLogs_${roomId}`, JSON.parse(JSON.stringify(roomConsoleLogs.value))); };
+    
+/* ===== 群聊：离线时间缺口回填 ===== */
+const BACKFILL_MAX_TOTAL = 10;
+const COOLDOWN_MS = 2 * 60 * 1000;
+
+const TIME_BUCKETS = [
+  { key: 'dawn',   start: 5,  end: 8,  weight: 0.05 },
+  { key: 'am',     start: 8,  end: 11, weight: 0.28 },
+  { key: 'noon',   start: 11, end: 14, weight: 0.15 },
+  { key: 'pm',     start: 14, end: 18, weight: 0.25 },
+  { key: 'eve',    start: 18, end: 23, weight: 0.25 },
+  { key: 'night',  start: 23, end: 29, weight: 0.02 },
+];
+
+function decideBackfillCount(gapMs) {
+  const m = gapMs / (60 * 1000);
+  if (m < 30) return randInt(1, 2);
+  if (m < 180) return randInt(3, 4);
+  if (m < 720) return randInt(4, 6);
+  return randInt(5, 10);
+}
+function randInt(a, b) { return Math.floor(a + Math.random() * (b - a + 1)); }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)] || ''; }
+function hourOf(ts) { return new Date(ts).getHours(); }
+function bucketOf(h) {
+  if (h >= 5 && h < 8) return 'dawn';
+  if (h >= 8 && h < 11) return 'am';
+  if (h >= 11 && h < 14) return 'noon';
+  if (h >= 14 && h < 18) return 'pm';
+  if (h >= 18 && h < 23) return 'eve';
+  return 'night';
+}
+function getCoveredBuckets(startTs, endTs) {
+  const covered = new Set(); let t = startTs;
+  while (t <= endTs) { covered.add(bucketOf(hourOf(t))); t += 60 * 60 * 1000; }
+  return Array.from(covered);
+}
+function normalizeWeights(buckets) {
+  const map = {}; let sum = 0;
+  for (const b of TIME_BUCKETS) { if (buckets.includes(b.key)) { map[b.key] = b.weight; sum += b.weight; } }
+  Object.keys(map).forEach(k => map[k] = map[k] / (sum || 1));
+  return map;
+}
+function getLocalKeywords() {
+  const recent = allMessages.value.filter(m => !m.recalled && !m.loading).slice(-10).map(m => m.content).join(' ');
+  const words = recent.replace(/[，。！？,.!?【】\[\]（）()“”"'\-:：]/g, ' ').split(/\s+/).filter(w => w && w.length >= 2);
+  const uniq = Array.from(new Set(words));
+  const k = Math.min(5, Math.max(0, uniq.length));
+  const res = [];
+  while (res.length < Math.min(3 + randInt(0, 2), k)) {
+    const w = pick(uniq); if (w && !res.includes(w)) res.push(w);
+  }
+  return res;
+}
+function buildTemplatesFor(member) {
+  return {
+    dawn: ['醒了没', '喝水', '刷牙', '起床'],
+    am:   ['上班咯', '摸鱼', '火速打卡', '忙里偷闲'],
+    noon: ['吃饭没', '我要睡', '好困', '出去吃嘛'],
+    pm:   ['继续肝', '咖啡加满', '烦死了', '摸摸鱼'],
+    eve:  ['下班回家', '一起玩', '发动态', '逛逛'],
+    night:['睡不着', '听歌', '闲聊', '还醒着'],
+    tail: ['哈哈','欸','唔','喵','诶嘿']
+  };
+}
+function styleShortBubble(text) {
+  const cuts = text.split(/[,，.。!！?？]/).map(s => s.trim()).filter(Boolean);
+  if (!cuts.length) return [text];
+  const chunks = [];
+  for (const c of cuts) {
+    if (c.length <= 12) chunks.push(c);
+    else { chunks.push(c.slice(0, 10)); if (c.length > 10) chunks.push(c.slice(10, Math.min(20, c.length))); }
+    if (chunks.length >= 3) break;
+  }
+  return chunks.length ? chunks : [text];
+}
+
+function buildSimText(bucketKey, member) {
+  const t = buildTemplatesFor(member);
+  const body = pick(t[bucketKey] || t.pm);
+  const tail = Math.random() < 0.4 ? (' ' + pick(t.tail)) : '';
+  const kws = getLocalKeywords();
+  const kw = Math.random() < 0.5 && kws.length ? (' ' + pick(kws)) : '';
+  return (body + kw + tail).trim();
+}
+
+function distributeIntoBatches(total, weights) {
+  if (total <= 0) return [];
+  const entries = Object.entries(weights);
+  if (!entries.length) return [];
+  const alloc = entries.map(([k, w]) => ({ k, c: 0, w }));
+  let remain = total;
+  while (remain > 0) {
+    const r = Math.random(); let acc = 0;
+    for (const a of alloc) { acc += a.w; if (r <= acc + 1e-8) { a.c += 1; break; } }
+    remain--;
+  }
+  const batches = [];
+  for (const a of alloc) {
+    let left = a.c;
+    while (left > 0) {
+      const take = Math.min(left, randInt(1, Math.min(3, left)));
+      batches.push({ bucket: a.k, count: take });
+      left -= take;
+    }
+  }
+  return batches.sort(() => Math.random() - 0.5);
+}
+
+async function doBackfillGroup() {
+  const threadKey = `group_${roomId}`;
+  const now = Date.now();
+  const lastSeen = (await dbGet(`last_seen_${threadKey}`)) || 0;
+  const lastBackfill = (await dbGet(`last_backfill_${threadKey}`)) || 0;
+  const lastMyMsgTs = allMessages.value.filter(m => m.role === 'user' && !m.recalled && !m.loading).slice(-1)[0]?.timestamp || 0;
+
+  if (!lastSeen) { await dbSet(`last_seen_${threadKey}`, now); return; }
+  if (now - lastMyMsgTs < COOLDOWN_MS) {
+    await dbSet(`last_seen_${threadKey}`, now);
+    return;
+  }
+
+  const gapStart = Math.max(lastBackfill || 0, lastSeen);
+  const gap = now - gapStart;
+  let total = decideBackfillCount(gap);
+  total = Math.min(total, BACKFILL_MAX_TOTAL);
+  if (total <= 0) {
+    await dbSet(`last_seen_${threadKey}`, now);
+    await dbSet(`last_backfill_${threadKey}`, now);
+    return;
+  }
+
+  const covered = getCoveredBuckets(gapStart, now);
+  const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
+  const batches = distributeIntoBatches(total, weights);
+
+  addRoomLog(`正在补齐离线期间消息（${total}条）`);
+
+  const inserts = [];
+  let cursorTs = gapStart + 2 * 60 * 1000;
+
+  for (const b of batches) {
+    const batchGap = randInt(30, 120) * 60 * 1000;
+    cursorTs += batchGap;
+
+    // 批次中挑1~2个成员互动
+    const speakers = [];
+    const ms = members.value || [];
+    if (ms.length === 0) break;
+
+    const first = pick(ms);
+    speakers.push(first);
+    if (Math.random() < 0.6 && ms.length > 1) {
+      let second = pick(ms);
+      let safe = 0;
+      while (second === first && safe++ < 5) second = pick(ms);
+      if (second !== first) speakers.push(second);
+    }
+
+    for (const sp of speakers) {
+      const text = buildSimText(b.bucket, sp);
+      const bubbles = styleShortBubble(text);
+      for (const bubble of bubbles) {
+        inserts.push({
+          id: cursorTs + Math.floor(Math.random() * 1000),
+          role: 'char',
+          senderName: sp.name,
+          memberId: sp.id,
+          content: bubble,
+          type: 'normal',
+          recalled: false,
+          revealed: false,
+          timestamp: cursorTs,
+          simulated: true
+        });
+      }
+      cursorTs += randInt(1, 3) * 60 * 1000;
+    }
+  }
+
+  const merged = [...allMessages.value, ...inserts].sort((a, b) => (a.timestamp || a.id) - (b.timestamp || b.id));
+  allMessages.value.splice(0, allMessages.value.length, ...merged);
+  await saveMessages();
+
+  addRoomLog(`离线消息补齐完成（${inserts.length}条）`);
+  await dbSet(`last_seen_${threadKey}`, now);
+  await dbSet(`last_backfill_${threadKey}`, now);
+}
+/* ===== 群聊：离线时间缺口回填 结束 ===== */
+
     const saveCollect = async (item) => {
   const all = JSON.parse(JSON.stringify((await dbGet('collects')) || []));
   all.unshift(item);
@@ -632,18 +855,54 @@ const collectTheaterRoom = async (content) => {
 };
 
     const sendMsg = async () => {
-      const text = inputText.value.trim(); if (!text) return;
-      const msg = { id: Date.now(), role: 'user', content: text, type: 'normal', senderName: myName.value, memberId: null, quoteId: quotingMsg.value ? quotingMsg.value.id : null, recalled: false, revealed: false };
-      allMessages.value.push(msg); inputText.value = ''; quotingMsg.value = null; toolbarOpen.value = false;
+      const text = inputText.value.trim();
+      if (!text) return;
+
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: text,
+        type: 'normal',
+        senderName: myName.value,
+        memberId: null,
+        quoteId: quotingMsg.value ? quotingMsg.value.id : null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
+
+      allMessages.value.push(msg);
+      inputText.value = '';
+      quotingMsg.value = null;
+      toolbarOpen.value = false;
       if (inputRef.value) inputRef.value.style.height = 'auto';
-      await saveMessages(); scheduleMemorySearch(); nextTick(() => { scrollToBottom(); refreshIcons(); });
+      await saveMessages();
+      scheduleMemorySearch();
+      nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
 
     const sendWhisper = async () => {
-      if (!whisperText.value.trim()) return; myWhisperShow.value = false;
-      const msg = { id: Date.now(), role: 'user', content: whisperText.value.trim(), type: 'whisper', senderName: myName.value, memberId: null, quoteId: null, recalled: false, revealed: false };
-      allMessages.value.push(msg); whisperText.value = '';
-      await saveMessages(); scheduleMemorySearch(); nextTick(() => { scrollToBottom(); refreshIcons(); });
+      if (!whisperText.value.trim()) return;
+      myWhisperShow.value = false;
+
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: whisperText.value.trim(),
+        type: 'whisper',
+        senderName: myName.value,
+        memberId: null,
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
+
+      allMessages.value.push(msg);
+      whisperText.value = '';
+      await saveMessages();
+      scheduleMemorySearch();
+      nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
 
 // ===== 角色记忆写入 =====
@@ -1429,20 +1688,28 @@ alert('连接失败：' + e.message);
     // 聊天设置
     const openChatSettings = () => { toolbarOpen.value = false; aiReadCountInput.value = aiReadCount.value; chatSettingsShow.value = true; nextTick(() => refreshIcons()); };
     const saveChatSettings = async () => {
-      chatSettingsShow.value = false; aiReadCount.value = parseInt(aiReadCountInput.value) || 20;
+      chatSettingsShow.value = false;
+      aiReadCount.value = parseInt(aiReadCountInput.value) || 20;
+
       await saveAwareSettings();
-      await dbSet(`groupTranslate_${roomId}`, { on: translateOn.value, lang: translateLang.value });
-      await dbSet(`groupRealtimeTime_${roomId}`, realtimeTimeOn.value); 
+      await dbSet(`groupTranslate_${roomId}`, {
+        on: translateOn.value,
+        lang: translateLang.value
+      });
+      await dbSet(`groupRealtimeTime_${roomId}`, realtimeTimeOn.value);
+
       const roomList = JSON.parse(JSON.stringify((await dbGet('roomList')) || []));
       const rIdx = roomList.findIndex(r => r.id === roomId);
-      if (rIdx !== -1) { roomList[rIdx].aiReadCount = aiReadCount.value; roomList[rIdx].selectedWorldBooks = JSON.parse(JSON.stringify(selectedWorldBooks.value)); roomList[rIdx].socialCircleOn = socialCircleOn.value; roomList[rIdx].socialInjectCount = socialInjectCount.value; roomList[rIdx].socialInjectOn = socialInjectOn.value; await dbSet('roomList', roomList); }
-      const rId = params.get('roomId');
-    if (cwMode === 'room' && rId) {
-      await dbSet(`memorySearchOn_room_${rId}`, memorySearchOn.value);
-    } else {
-      await dbSet(`memorySearchOn_${charId}`, memorySearchOn.value);
-    }
-    await dbSet('charList', charList);
+      if (rIdx !== -1) {
+        roomList[rIdx].aiReadCount = aiReadCount.value;
+        roomList[rIdx].selectedWorldBooks = JSON.parse(JSON.stringify(selectedWorldBooks.value));
+        roomList[rIdx].socialCircleOn = socialCircleOn.value;
+        roomList[rIdx].socialInjectCount = socialInjectCount.value;
+        roomList[rIdx].socialInjectOn = socialInjectOn.value;
+        await dbSet('roomList', roomList);
+      }
+
+      await dbSet(`memorySearchOn_room_${roomId}`, memorySearchOn.value);
     };
 
     const openDimensionLink = () => { toolbarOpen.value = false; dimensionShow.value = true; nextTick(() => refreshIcons()); };
@@ -1789,9 +2056,21 @@ const runTheaterComment = async () => {
 const startAutoSend = () => {
   stopAutoSend();
   if (!autoSendOn.value) return;
+
   const triggerAutoSend = async () => {
     if (autoSendUseHiddenMsg.value && autoSendHiddenMsg.value.trim()) {
-      const hiddenMsg = { id: Date.now(), role: 'user', content: autoSendHiddenMsg.value.trim(), type: 'normal', senderName: myName.value, memberId: null, quoteId: null, recalled: false, revealed: false, timestamp: Date.now() };
+      const hiddenMsg = {
+        id: Date.now(),
+        role: 'user',
+        content: autoSendHiddenMsg.value.trim(),
+        type: 'normal',
+        senderName: myName.value,
+        memberId: null,
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
       allMessages.value.push(hiddenMsg);
       await saveMessages();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
@@ -2075,12 +2354,33 @@ if (autoSendData) {
       if (savedPeekHistory) peekHistory.value = savedPeekHistory;
       const savedMirrorHistory = await dbGet(`groupMirrorHistory_${roomId}`);
       if (savedMirrorHistory) mirrorHistory.value = savedMirrorHistory;
-const rId = params.get('roomId');
-const searchModeKey = (cwMode === 'room' && rId) ? `memorySearchOn_room_${rId}` : `memorySearchOn_${charId}`;
-const savedMemorySearchOn = await dbGet(searchModeKey);
-if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) memorySearchOn.value = savedMemorySearchOn;
+const savedMemorySearchOn = await dbGet(`memorySearchOn_room_${roomId}`);
+if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) {
+  memorySearchOn.value = savedMemorySearchOn;
+}
 
       try { await loadBeauty(); } catch(e) { console.warn('loadBeauty error:', e); }
+
+      // ===== 回填执行（群聊）=====
+      try {
+        await doBackfillGroup();
+      } catch (e) {
+        console.warn('group backfill error:', e);
+      }
+
+      // 记录 last_seen
+      await dbSet(`last_seen_group_${roomId}`, Date.now());
+
+      // 页面隐藏/关闭时更新 last_seen
+      window.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'hidden') {
+          await dbSet(`last_seen_group_${roomId}`, Date.now());
+        }
+      });
+
+      window.addEventListener('pagehide', async () => {
+        await dbSet(`last_seen_group_${roomId}`, Date.now());
+      });
 
       setTimeout(() => {
         try { refreshIcons(); } catch(e) {}

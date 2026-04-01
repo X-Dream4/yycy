@@ -820,8 +820,299 @@ const scheduleMemorySearch = () => {
   clearTimeout(memorySearchTimer);
   memorySearchTimer = setTimeout(() => { runMemorySearch(); }, 300);
 };
-    
+
+/* ===== 离线时间缺口回填：配置与工具 ===== */
+const BACKFILL_MAX_TOTAL = 10; // 单次上限
+const COOLDOWN_MS = 2 * 60 * 1000; // 冷却期
+// 档位：偶尔/正常/经常，默认 normal，可通过 momentsMode_{charId} 改为 'rare' | 'often'
+const MOMENTS_MODE_DEFAULT = 'normal';
+const MOMENTS_PROB = { rare: 0.2, normal: 0.35, often: 0.6 };
+
+// 分时段桶与默认权重（会对覆盖桶归一化）：清晨(05–08)、上午(08–11)、中午(11–14)、下午(14–18)、晚上(18–23)、深夜(23–05)
+const TIME_BUCKETS = [
+  { key: 'dawn',   start: 5,  end: 8,  weight: 0.05 },
+  { key: 'am',     start: 8,  end: 11, weight: 0.28 },
+  { key: 'noon',   start: 11, end: 14, weight: 0.15 },
+  { key: 'pm',     start: 14, end: 18, weight: 0.25 },
+  { key: 'eve',    start: 18, end: 23, weight: 0.25 },
+  { key: 'night',  start: 23, end: 29, weight: 0.02 }, // 29 => 次日5点
+];
+
+// 回填条数规则（你确认的新版阈值）
+function decideBackfillCount(gapMs) {
+  const m = gapMs / (60 * 1000);
+  if (m < 30) return randInt(1, 2);
+  if (m < 180) return randInt(3, 4);
+  if (m < 720) return randInt(4, 6);
+  return randInt(5, 10);
+}
+
+function randInt(a, b) {
+  return Math.floor(a + Math.random() * (b - a + 1));
+}
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)] || ''; }
+
+function getLocalKeywords() {
+  // 从最近消息提取3~5个关键词（极简本地法）
+  const recent = allMessages.value.filter(m => !m.recalled && !m.loading).slice(-10).map(m => m.content).join(' ');
+  const words = recent.replace(/[，。！？,.!?【】\[\]（）()“”"'\-:：]/g, ' ')
+    .split(/\s+/).filter(w => w && w.length >= 2);
+  const uniq = Array.from(new Set(words));
+  const k = Math.min(5, Math.max(0, uniq.length));
+  const res = [];
+  while (res.length < Math.min(3 + randInt(0, 2), k)) {
+    const w = pick(uniq);
+    if (w && !res.includes(w)) res.push(w);
+  }
+  return res;
+}
+
+function hourOf(ts) { return new Date(ts).getHours(); }
+function bucketOf(h) {
+  if (h >= 5 && h < 8) return 'dawn';
+  if (h >= 8 && h < 11) return 'am';
+  if (h >= 11 && h < 14) return 'noon';
+  if (h >= 14 && h < 18) return 'pm';
+  if (h >= 18 && h < 23) return 'eve';
+  return 'night';
+}
+
+function getCoveredBuckets(startTs, endTs) {
+  // 收集gap内覆盖到的桶
+  const covered = new Set();
+  let t = startTs;
+  while (t <= endTs) {
+    covered.add(bucketOf(hourOf(t)));
+    t += 60 * 60 * 1000;
+  }
+  return Array.from(covered);
+}
+
+function normalizeWeights(buckets) {
+  const map = {};
+  let sum = 0;
+  for (const b of TIME_BUCKETS) {
+    if (buckets.includes(b.key)) { map[b.key] = b.weight; sum += b.weight; }
+  }
+  Object.keys(map).forEach(k => map[k] = map[k] / (sum || 1));
+  return map;
+}
+
+// 简单模板（按时段+角色口吻）
+function buildTemplates(persona, name) {
+  const baseTone = persona ? (persona.slice(0, 16)) : '';
+  return {
+    dawn:  [
+      '早醒了…还困', '去洗脸', '喝口水', '起床？',
+    ],
+    am:    [
+      '在路上', '摸鱼中', '想你', '有点忙', '先干正事',
+    ],
+    noon:  [
+      '吃了吗', '午饭难吃', '犯困了', '打个盹',
+    ],
+    pm:    [
+      '继续忙', '喝咖啡', '有点烦', '看会儿东西',
+    ],
+    eve:   [
+      '下班了', '回家路上', '想聊天', '刷刷动态',
+    ],
+    night: [
+      '不困', '听歌', '躺着想事', '还醒着',
+    ],
+    tail: [
+      'emmm', '哈哈', '欸', '唔', '唉', '喵', '诶嘿'
+    ],
+    lead: [
+      '欸', '喂', '喂喂', '诶', '嘿'
+    ]
+  };
+}
+
+function styleShortBubble(text) {
+  // 模拟「短句、多条气泡、口语化」
+  const cuts = text.split(/[,，.。!！?？]/).map(s => s.trim()).filter(Boolean);
+  if (!cuts.length) return [text];
+  const chunks = [];
+  for (const c of cuts) {
+    if (c.length <= 12) chunks.push(c);
+    else {
+      // 简单拆分
+      chunks.push(c.slice(0, 10));
+      if (c.length > 10) chunks.push(c.slice(10, Math.min(20, c.length)));
+    }
+    if (chunks.length >= 3) break;
+  }
+  return chunks.length ? chunks : [text];
+}
+
+async function getMomentsMode() {
+  return (await dbGet(`momentsMode_${charId}`)) || MOMENTS_MODE_DEFAULT;
+}
+
+async function maybeGenerateMoments(startTs, endTs) {
+  // 每跨2小时一个窗口，按档位概率生成1条；单次回填最多2条
+  const mode = await getMomentsMode();
+  const p = MOMENTS_PROB[mode] ?? MOMENTS_PROB.normal;
+  let count = 0;
+  for (let t = startTs; t < endTs; t += 2 * 60 * 60 * 1000) {
+    if (count >= 2) break;
+    // 深夜概率减半（23–5点）
+    const h = hourOf(t);
+    const inNight = (h >= 23 || h < 5);
+    const prob = inNight ? p / 2 : p;
+    if (Math.random() < prob) {
+      await writeMomentLocal(t);
+      count++;
+    }
+  }
+}
+
+async function writeMomentLocal(ts) {
+  const kws = getLocalKeywords();
+  const text = `随手记：${kws[0] || '路过'} ${kws[1] || ''}`.trim();
+  const all = (await dbGet('moments')) || [];
+  all.unshift({
+    id: ts + Math.floor(Math.random() * 1000),
+    authorType: 'char',
+    charId: charId,
+    charName: charName.value,
+    content: text,
+    visibility: 'all',
+    visibilityChars: [],
+    time: ts,
+    likes: 0,
+    likedChars: [],
+    likedByMe: false,
+    comments: [],
+    pinned: false,
+    simulated: true
+  });
+  if (all.length > 1000) all.splice(1000);
+  await dbSet('moments', all);
+}
+
+function buildSimText(bucketKey, persona) {
+  const tmp = buildTemplates(persona, charName.value);
+  const body = pick(tmp[bucketKey] || tmp.pm);
+  const tail = Math.random() < 0.5 ? (' ' + pick(tmp.tail)) : '';
+  const lead = Math.random() < 0.25 ? (pick(tmp.lead) + ' ') : '';
+  const kws = getLocalKeywords();
+  const kw = Math.random() < 0.6 && kws.length ? (' ' + pick(kws)) : '';
+  return `${lead}${body}${kw}${tail}`.trim();
+}
+
+function distributeIntoBatches(total, weights) {
+  // 返回形如 [{bucket:'am', count:2}, ...]，每批次1-3条，由桶权重决定
+  if (total <= 0) return [];
+  const entries = Object.entries(weights);
+  if (!entries.length) return [];
+  const alloc = entries.map(([k, w]) => ({ k, c: 0, w }));
+  let remain = total;
+  while (remain > 0) {
+    const r = Math.random();
+    let acc = 0;
+    for (const a of alloc) {
+      acc += a.w;
+      if (r <= acc + 1e-8) { a.c += 1; break; }
+    }
+    remain--;
+  }
+  // 每桶再拆成小批，每批1-3条
+  const batches = [];
+  for (const a of alloc) {
+    let left = a.c;
+    while (left > 0) {
+      const take = Math.min(left, randInt(1, Math.min(3, left)));
+      batches.push({ bucket: a.k, count: take });
+      left -= take;
+    }
+  }
+  // 打乱批次顺序
+  return batches.sort(() => Math.random() - 0.5);
+}
+
+async function doBackfillChat() {
+  const threadKey = `chat_${charId}`;
+  const now = Date.now();
+  const lastSeen = (await dbGet(`last_seen_${threadKey}`)) || 0;
+  const lastBackfill = (await dbGet(`last_backfill_${threadKey}`)) || 0;
+  const lastMyMsgTs = allMessages.value.filter(m => m.role === 'user' && !m.recalled && !m.loading).slice(-1)[0]?.timestamp || 0;
+
+  if (!lastSeen) { await dbSet(`last_seen_${threadKey}`, now); return; }
+
+  const gapStart = Math.max(lastBackfill || 0, lastSeen);
+  const gap = now - gapStart;
+  if (gap < 30 * 60 * 1000) { // 低于30分钟也允许1~2条（你新规则），但若无lastBackfill则从lastSeen计算
+    // 仍遵守冷却
+  }
+
+  // 冷却保护：最近2分钟你发过消息则不回填
+  if (now - lastMyMsgTs < COOLDOWN_MS) {
+    await dbSet(`last_seen_${threadKey}`, now);
+    return;
+  }
+
+  // 计算本次回填总量
+  let total = decideBackfillCount(gap);
+  total = Math.min(total, BACKFILL_MAX_TOTAL);
+  if (total <= 0) {
+    await dbSet(`last_seen_${threadKey}`, now);
+    await dbSet(`last_backfill_${threadKey}`, now);
+    return;
+  }
+
+  // 分桶
+  const covered = getCoveredBuckets(gapStart, now);
+  const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
+  const batches = distributeIntoBatches(total, weights);
+
+  addCharLog(`正在补齐离线期间消息（${total}条，批次${batches.length}）`);
+
+  const persona = charPersona.value || '';
+  // 执行 Moments（离线期偶发）
+  await maybeGenerateMoments(gapStart, now);
+
+  // 在历史中插入模拟消息（按时间戳）
+  const inserts = [];
+  let cursorTs = gapStart + 2 * 60 * 1000; // 从gap开始后一点点
+  for (const b of batches) {
+    // 批次间隔 30–120 分钟
+    const batchGap = randInt(30, 120) * 60 * 1000;
+    cursorTs += batchGap;
+    for (let i = 0; i < b.count; i++) {
+      // 批内相隔 1–5 分钟
+      cursorTs += randInt(1, 5) * 60 * 1000;
+      if (cursorTs >= now) cursorTs = now - randInt(1, 5) * 60 * 1000;
+      const text = buildSimText(b.bucket, persona);
+      const bubbles = styleShortBubble(text);
+      for (const bubble of bubbles) {
+        inserts.push({
+          id: cursorTs + Math.floor(Math.random() * 1000),
+          role: 'char',
+          content: bubble,
+          type: 'normal',
+          recalled: false,
+          revealed: false,
+          timestamp: cursorTs,
+          simulated: true
+        });
+      }
+    }
+  }
+
+  // 合并并排序
+  const merged = [...allMessages.value, ...inserts].sort((a, b) => (a.timestamp || a.id) - (b.timestamp || b.id));
+  allMessages.value.splice(0, allMessages.value.length, ...merged);
+  await saveMessages();
+
+  addCharLog(`离线消息补齐完成（${inserts.length}条）`);
+  await dbSet(`last_seen_${threadKey}`, now);
+  await dbSet(`last_backfill_${threadKey}`, now);
+}
+
 let apiCalling = false;
+
 // ===== 角色记忆写入 =====
 const writeCharMemory = async (targetCharId, memItem) => {
   const key = `charMemory_${targetCharId}`;
@@ -2907,6 +3198,26 @@ const savedMemorySearchOn = await dbGet(`memorySearchOn_${charId}`);
 if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) memorySearchOn.value = savedMemorySearchOn;
 
       try { await loadBeauty(); } catch(e) { console.warn('loadBeauty error:', e); }
+
+// ===== 回填执行（主单聊）=====
+try {
+  await doBackfillChat();
+} catch (e) {
+  console.warn('backfill error:', e);
+}
+// 记录 last_seen
+await dbSet(`last_seen_chat_${charId}`, Date.now());
+
+// 页面隐藏/关闭时更新 last_seen
+window.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'hidden') {
+    await dbSet(`last_seen_chat_${charId}`, Date.now());
+  }
+});
+window.addEventListener('pagehide', async () => {
+  await dbSet(`last_seen_chat_${charId}`, Date.now());
+});
+
       setTimeout(() => {
         try { refreshIcons(); } catch(e) {}
         try { scrollToBottom(); } catch(e) {}

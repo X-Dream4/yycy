@@ -787,7 +787,18 @@ const applySummaryPromptPreset = (p) => {
     const sendWhisper = async () => {
       if (!whisperText.value.trim()) return;
       myWhisperShow.value = false;
-      const msg = { id: Date.now(), role: 'user', content: whisperText.value.trim(), type: 'whisper', quoteId: null, recalled: false, revealed: false };
+
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: whisperText.value.trim(),
+        type: 'whisper',
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
+
       allMessages.value.push(msg);
       whisperText.value = '';
       await saveMessages();
@@ -879,6 +890,287 @@ const scheduleMemorySearch = () => {
   clearTimeout(memorySearchTimer);
   memorySearchTimer = setTimeout(() => { runMemorySearch(); }, 300);
 };
+
+/* ===== 离线时间缺口回填（角色世界） ===== */
+const BACKFILL_MAX_TOTAL = 10;
+const COOLDOWN_MS = 2 * 60 * 1000;
+const MOMENTS_MODE_DEFAULT = 'normal';
+const MOMENTS_PROB = { rare: 0.2, normal: 0.35, often: 0.6 };
+
+const TIME_BUCKETS = [
+  { key: 'dawn',   start: 5,  end: 8,  weight: 0.05 },
+  { key: 'am',     start: 8,  end: 11, weight: 0.28 },
+  { key: 'noon',   start: 11, end: 14, weight: 0.15 },
+  { key: 'pm',     start: 14, end: 18, weight: 0.25 },
+  { key: 'eve',    start: 18, end: 23, weight: 0.25 },
+  { key: 'night',  start: 23, end: 29, weight: 0.02 },
+];
+
+function decideBackfillCount(gapMs) {
+  const m = gapMs / (60 * 1000);
+  if (m < 30) return randInt(1, 2);
+  if (m < 180) return randInt(3, 4);
+  if (m < 720) return randInt(4, 6);
+  return randInt(5, 10);
+}
+function randInt(a, b) { return Math.floor(a + Math.random() * (b - a + 1)); }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)] || ''; }
+function hourOf(ts) { return new Date(ts).getHours(); }
+function bucketOf(h) {
+  if (h >= 5 && h < 8) return 'dawn';
+  if (h >= 8 && h < 11) return 'am';
+  if (h >= 11 && h < 14) return 'noon';
+  if (h >= 14 && h < 18) return 'pm';
+  if (h >= 18 && h < 23) return 'eve';
+  return 'night';
+}
+function getCoveredBuckets(startTs, endTs) {
+  const covered = new Set();
+  let t = startTs;
+  while (t <= endTs) { covered.add(bucketOf(hourOf(t))); t += 60 * 60 * 1000; }
+  return Array.from(covered);
+}
+function normalizeWeights(buckets) {
+  const map = {}; let sum = 0;
+  for (const b of TIME_BUCKETS) { if (buckets.includes(b.key)) { map[b.key] = b.weight; sum += b.weight; } }
+  Object.keys(map).forEach(k => map[k] = map[k] / (sum || 1));
+  return map;
+}
+function getLocalKeywords() {
+  const recent = allMessages.value.filter(m => !m.recalled && !m.loading).slice(-10).map(m => m.content).join(' ');
+  const words = recent.replace(/[，。！？,.!?【】\[\]（）()“”"'\-:：]/g, ' ').split(/\s+/).filter(w => w && w.length >= 2);
+  const uniq = Array.from(new Set(words));
+  const k = Math.min(5, Math.max(0, uniq.length));
+  const res = [];
+  while (res.length < Math.min(3 + randInt(0, 2), k)) {
+    const w = pick(uniq); if (w && !res.includes(w)) res.push(w);
+  }
+  return res;
+}
+function buildTemplates(persona, name) {
+  return {
+    dawn: ['早醒了…', '去洗漱', '喝水', '起床？'],
+    am:   ['在路上', '摸鱼', '想你', '有点忙', '先去忙'],
+    noon: ['吃了吗', '午饭一般', '犯困', '打盹'],
+    pm:   ['继续忙', '喝咖啡', '有点烦', '看看东西'],
+    eve:  ['下班', '回家路上', '想聊天', '刷动态'],
+    night:['不困', '听歌', '躺着想事', '还醒着'],
+    tail: ['emmm','哈哈','欸','唔','唉','喵','诶嘿'],
+    lead: ['欸','喂','喂喂','诶','嘿']
+  };
+}
+function styleShortBubble(text) {
+  const cuts = text.split(/[,，.。!！?？]/).map(s => s.trim()).filter(Boolean);
+  if (!cuts.length) return [text];
+  const chunks = [];
+  for (const c of cuts) {
+    if (c.length <= 12) chunks.push(c);
+    else { chunks.push(c.slice(0, 10)); if (c.length > 10) chunks.push(c.slice(10, Math.min(20, c.length))); }
+    if (chunks.length >= 3) break;
+  }
+  return chunks.length ? chunks : [text];
+}
+async function getMomentsMode() {
+  return (await dbGet(`momentsMode_${charId}`)) || MOMENTS_MODE_DEFAULT;
+}
+async function maybeGenerateMoments(startTs, endTs) {
+  const mode = await getMomentsMode();
+  const p = MOMENTS_PROB[mode] ?? MOMENTS_PROB.normal;
+  let count = 0;
+  for (let t = startTs; t < endTs; t += 2 * 60 * 60 * 1000) {
+    if (count >= 2) break;
+    const h = hourOf(t); const inNight = (h >= 23 || h < 5);
+    const prob = inNight ? p / 2 : p;
+    if (Math.random() < prob) { await writeMomentLocal(t); count++; }
+  }
+}
+async function writeMomentLocal(ts) {
+  const kws = getLocalKeywords();
+  const text = `随手记：${kws[0] || '路过'} ${kws[1] || ''}`.trim();
+  const all = (await dbGet('moments')) || [];
+  all.unshift({
+    id: ts + Math.floor(Math.random() * 1000),
+    authorType: 'char',
+    charId: charId,
+    charName: charName.value,
+    content: text,
+    visibility: 'all',
+    visibilityChars: [],
+    time: ts,
+    likes: 0,
+    likedChars: [],
+    likedByMe: false,
+    comments: [],
+    pinned: false,
+    simulated: true
+  });
+  if (all.length > 1000) all.splice(1000);
+  await dbSet('moments', all);
+}
+function buildSimText(bucketKey, persona) {
+  const tmp = buildTemplates(persona, charName.value);
+  const body = pick(tmp[bucketKey] || tmp.pm);
+  const tail = Math.random() < 0.5 ? (' ' + pick(tmp.tail)) : '';
+  const lead = Math.random() < 0.25 ? (pick(tmp.lead) + ' ') : '';
+  const kws = getLocalKeywords();
+  const kw = Math.random() < 0.6 && kws.length ? (' ' + pick(kws)) : '';
+  return `${lead}${body}${kw}${tail}`.trim();
+}
+function distributeIntoBatches(total, weights) {
+  if (total <= 0) return [];
+  const entries = Object.entries(weights);
+  if (!entries.length) return [];
+  const alloc = entries.map(([k, w]) => ({ k, c: 0, w }));
+  let remain = total;
+  while (remain > 0) {
+    const r = Math.random(); let acc = 0;
+    for (const a of alloc) { acc += a.w; if (r <= acc + 1e-8) { a.c += 1; break; } }
+    remain--;
+  }
+  const batches = [];
+  for (const a of alloc) {
+    let left = a.c;
+    while (left > 0) {
+      const take = Math.min(left, randInt(1, Math.min(3, left)));
+      batches.push({ bucket: a.k, count: take }); left -= take;
+    }
+  }
+  return batches.sort(() => Math.random() - 0.5);
+}
+
+function getCWThreadKey() {
+  const mode = cwMode;
+  if (mode === 'private') {
+    const pcId = params.get('pcId') ? parseInt(params.get('pcId')) : null;
+    return pcId ? `pc_${charId}_${pcId}` : `pc_${charId}_unknown`;
+  } else if (mode === 'room') {
+    const roomId = params.get('roomId') ? parseInt(params.get('roomId')) : null;
+    return roomId ? `room_${roomId}` : `room_unknown`;
+  }
+  return `chat_${charId}`;
+}
+
+async function doBackfillCW() {
+  const threadKey = getCWThreadKey();
+  const now = Date.now();
+  const lastSeen = (await dbGet(`last_seen_${threadKey}`)) || 0;
+  const lastBackfill = (await dbGet(`last_backfill_${threadKey}`)) || 0;
+  const lastMyMsgTs = allMessages.value.filter(m => m.role === 'user' && !m.recalled && !m.loading).slice(-1)[0]?.timestamp || 0;
+
+  if (!lastSeen) { await dbSet(`last_seen_${threadKey}`, now); return; }
+  if (now - lastMyMsgTs < COOLDOWN_MS) {
+    await dbSet(`last_seen_${threadKey}`, now);
+    return;
+  }
+
+  const gapStart = Math.max(lastBackfill || 0, lastSeen);
+  const gap = now - gapStart;
+  let total = decideBackfillCount(gap);
+  total = Math.min(total, BACKFILL_MAX_TOTAL);
+  if (total <= 0) {
+    await dbSet(`last_seen_${threadKey}`, now);
+    await dbSet(`last_backfill_${threadKey}`, now);
+    return;
+  }
+
+  const covered = getCoveredBuckets(gapStart, now);
+  const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
+  const batches = distributeIntoBatches(total, weights);
+
+  addCharLog(`正在补齐离线期间消息（${total}条）`);
+  // Moments 同步
+  await maybeGenerateMoments(gapStart, now);
+
+  const persona = charPersona.value || '';
+  const mode = cwMode;
+  const inserts = [];
+  let cursorTs = gapStart + 2 * 60 * 1000;
+
+  for (const b of batches) {
+    const batchGap = randInt(30, 120) * 60 * 1000;
+    cursorTs += batchGap;
+    for (let i = 0; i < b.count; i++) {
+      cursorTs += randInt(1, 5) * 60 * 1000;
+      if (cursorTs >= now) cursorTs = now - randInt(1, 5) * 60 * 1000;
+
+      if (mode === 'room') {
+        // 小群：随机1~2人互动（含主角或联系人）
+        const others = (charContacts.value || []).filter(c => c && c.name && c.name !== charName.value);
+        const speakers = [];
+        // 50%由主角说
+        if (Math.random() < 0.5) speakers.push({ name: charName.value, role: 'char' });
+        // 再挑一位联系人
+        if (others.length) {
+          const oc = pick(others);
+          speakers.push({ name: oc.name, role: 'other' });
+        }
+        if (!speakers.length) {
+          speakers.push({ name: charName.value, role: 'char' });
+        }
+        // 两人互相一句
+        for (const sp of speakers) {
+          const t = buildSimText(b.bucket, persona);
+          const bubbles = styleShortBubble(t);
+          for (const bubble of bubbles) {
+            inserts.push({
+              id: cursorTs + Math.floor(Math.random() * 1000),
+              role: sp.role,
+              senderName: sp.name,
+              content: bubble,
+              type: 'normal',
+              recalled: false,
+              revealed: false,
+              timestamp: cursorTs,
+              simulated: true
+            });
+          }
+          // 同批次内两人相隔1~3分钟
+          cursorTs += randInt(1, 3) * 60 * 1000;
+        }
+      } else {
+        // my 或 private 场景：以对话角色正常扮演（private 里对方也可偶发一条）
+        const t1 = buildSimText(b.bucket, persona);
+        for (const bubble of styleShortBubble(t1)) {
+          inserts.push({
+            id: cursorTs + Math.floor(Math.random() * 1000),
+            role: 'char',
+            content: bubble,
+            type: 'normal',
+            recalled: false,
+            revealed: false,
+            timestamp: cursorTs,
+            simulated: true
+          });
+        }
+        if (mode === 'private' && Math.random() < 0.35) {
+          // 对方轻回一句
+          const t2 = buildSimText(b.bucket, '');
+          for (const bubble of styleShortBubble(t2)) {
+            inserts.push({
+              id: cursorTs + 111 + Math.floor(Math.random() * 1000),
+              role: 'contact',
+              senderName: null,
+              content: bubble,
+              type: 'normal',
+              recalled: false,
+              revealed: false,
+              timestamp: cursorTs + randInt(1,3)*60*1000,
+              simulated: true
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const merged = [...allMessages.value, ...inserts].sort((a, b) => (a.timestamp || a.id) - (b.timestamp || b.id));
+  allMessages.value.splice(0, allMessages.value.length, ...merged);
+  await saveMessages();
+
+  addCharLog(`离线消息补齐完成（${inserts.length}条）`);
+  await dbSet(`last_seen_${threadKey}`, now);
+  await dbSet(`last_backfill_${threadKey}`, now);
+}
 
 let apiCalling = false;
 
@@ -1793,14 +2085,32 @@ const openChatSettings = async () => {
     const openDimensionLink = () => { toolbarOpen.value = false; dimensionShow.value = true; nextTick(() => refreshIcons()); };
     const openEmoji = () => { toolbarOpen.value = false; emojiShow.value = true; nextTick(() => refreshIcons()); };    const sendStickerFromPanel = async (s) => {
       emojiShow.value = false;
-      const msg = { id: Date.now(), role: 'user', content: s.name, type: 'sticker', quoteId: null, recalled: false, revealed: false };
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: s.name,
+        type: 'sticker',
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
       allMessages.value.push(msg);
       await saveMessages();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
       apiCalling = false;
     };
    const sendSticker = async (s) => {
-      const msg = { id: Date.now(), role: 'user', content: s.name, type: 'sticker', quoteId: null, recalled: false, revealed: false };
+      const msg = {
+        id: Date.now(),
+        role: 'user',
+        content: s.name,
+        type: 'sticker',
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now()
+      };
       allMessages.value.push(msg);
       await saveMessages();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
@@ -2429,17 +2739,17 @@ const startAutoSend = () => {
     if (autoSendUseHiddenMsg.value && autoSendHiddenMsg.value.trim()) {
       // 发一条隐藏的 user 消息触发角色回复
       const hiddenMsg = {
-  id: Date.now(),
-  role: 'user',
-  content: autoSendHiddenMsg.value.trim(),
-  type: 'auto_trigger',
-  quoteId: null,
-  recalled: false,
-  revealed: false,
-  timestamp: Date.now(),
-  autoHidden: true,
-  triggerExpanded: false
-};
+        id: Date.now(),
+        role: 'user',
+        content: autoSendHiddenMsg.value.trim(),
+        type: 'auto_trigger',
+        quoteId: null,
+        recalled: false,
+        revealed: false,
+        timestamp: Date.now(),
+        autoHidden: true,
+        triggerExpanded: false
+      };
 
       allMessages.value.push(hiddenMsg);
       await saveMessages();
@@ -3152,10 +3462,42 @@ if (notifyOnData !== null) notifyOn.value = notifyOnData;
 const notifySystemOnData = await dbGet(`notifySystemOn_${charId}`);
 if (notifySystemOnData !== null) notifySystemOn.value = notifySystemOnData;
 
-const savedMemorySearchOn = await dbGet(`memorySearchOn_room_${roomId}`);
-if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) memorySearchOn.value = savedMemorySearchOn;
+const currentRoomIdForSearch = params.get('roomId') ? parseInt(params.get('roomId')) : null;
+const savedMemorySearchOn = cwMode === 'room' && currentRoomIdForSearch
+  ? await dbGet(`memorySearchOn_room_${currentRoomIdForSearch}`)
+  : await dbGet(`memorySearchOn_${charId}`);
+if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) {
+  memorySearchOn.value = savedMemorySearchOn;
+}
 
       try { await loadBeauty(); } catch(e) { console.warn('loadBeauty error:', e); }
+
+      // ===== 回填执行（角色世界）=====
+      try {
+        await doBackfillCW();
+      } catch (e) {
+        console.warn('cw backfill error:', e);
+      }
+
+      // 记录 last_seen
+      {
+        const tk = getCWThreadKey();
+        await dbSet(`last_seen_${tk}`, Date.now());
+      }
+
+      // 页面隐藏/关闭时更新 last_seen
+      window.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'hidden') {
+          const tk = getCWThreadKey();
+          await dbSet(`last_seen_${tk}`, Date.now());
+        }
+      });
+
+      window.addEventListener('pagehide', async () => {
+        const tk = getCWThreadKey();
+        await dbSet(`last_seen_${tk}`, Date.now());
+      });
+
       setTimeout(() => {
         try { refreshIcons(); } catch(e) {}
         try { scrollToBottom(); } catch(e) {}
