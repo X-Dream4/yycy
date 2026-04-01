@@ -537,6 +537,15 @@ const charPickerSelections = ref({});
 /* ===== 群聊：离线时间缺口回填 ===== */
 const BACKFILL_MAX_TOTAL = 10;
 const COOLDOWN_MS = 2 * 60 * 1000;
+const BACKFILL_BAD_PHRASES = [
+  '在路上', '继续忙', '想聊天', '不困', '犯困', '回家路上',
+  '看东西', '刷动态', '摸鱼', '喝水', '起床？', '打盹', '下班'
+];
+const BACKFILL_STOP_WORDS = [
+  '这个','那个','就是','然后','真的','有点','一下','已经','还是','因为','所以',
+  '我们','你们','他们','自己','不是','什么','怎么','今天','刚刚','现在','感觉',
+  '消息','聊天','看到','一个','一下子','时候','东西','这样','那样','可以'
+];
 
 const TIME_BUCKETS = [
   { key: 'dawn',   start: 5,  end: 8,  weight: 0.05 },
@@ -572,31 +581,205 @@ function getCoveredBuckets(startTs, endTs) {
 }
 function normalizeWeights(buckets) {
   const map = {}; let sum = 0;
-  for (const b of TIME_BUCKETS) { if (buckets.includes(b.key)) { map[b.key] = b.weight; sum += b.weight; } }
+  for (const b of TIME_BUCKETS) {
+    if (buckets.includes(b.key)) { map[b.key] = b.weight; sum += b.weight; }
+  }
   Object.keys(map).forEach(k => map[k] = map[k] / (sum || 1));
   return map;
 }
-function getLocalKeywords() {
-  const recent = allMessages.value.filter(m => !m.recalled && !m.loading).slice(-10).map(m => m.content).join(' ');
-  const words = recent.replace(/[，。！？,.!?【】\[\]（）()“”"'\-:：]/g, ' ').split(/\s+/).filter(w => w && w.length >= 2);
-  const uniq = Array.from(new Set(words));
-  const k = Math.min(5, Math.max(0, uniq.length));
-  const res = [];
-  while (res.length < Math.min(3 + randInt(0, 2), k)) {
-    const w = pick(uniq); if (w && !res.includes(w)) res.push(w);
-  }
-  return res;
+function formatGapLabel(ms) {
+  const totalMin = Math.max(1, Math.floor(ms / 60000));
+  if (totalMin < 60) return `${totalMin}分钟`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h < 24) return m ? `${h}小时${m}分钟` : `${h}小时`;
+  const d = Math.floor(h / 24);
+  const rh = h % 24;
+  return rh ? `${d}天${rh}小时` : `${d}天`;
 }
-function buildTemplatesFor(member) {
+function bucketLabel(key) {
+  return ({ dawn: '清晨', am: '上午', noon: '中午', pm: '下午', eve: '晚上', night: '深夜' })[key] || key;
+}
+function normalizeBackfillText(text) {
+  return String(text || '')
+    .replace(/【.*?】|\[.*?\]/g, ' ')
+    .replace(/\s+/g, '')
+    .replace(/[，。！？,.!?~～…、；;：“”"'（）()]/g, '');
+}
+function splitNaturalUnits(text) {
+  const clean = String(text || '')
+    .replace(/【.*?】|\[.*?\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return [];
+  return clean
+    .split(/[。！？!?~～\n]/)
+    .flatMap(s => s.split(/[，,；;]/))
+    .map(s => s.trim())
+    .filter(s => s.length >= 4 && s.length <= 26);
+}
+function getLocalKeywords() {
+  const recent = allMessages.value
+    .filter(m => !m.recalled && !m.loading)
+    .slice(-14)
+    .map(m => m.content)
+    .join(' ');
+  const words = recent
+    .replace(/[【】\[\]（）()“”"'‘’\n\r\t，。！？,.!?、；;:：~～\-]/g, ' ')
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w && w.length >= 2 && w.length <= 8 && !BACKFILL_STOP_WORDS.includes(w));
+  return Array.from(new Set(words)).slice(0, 8);
+}
+function extractPersonaStyle(persona) {
+  const p = String(persona || '');
   return {
-    dawn: ['醒了没', '喝水', '刷牙', '起床'],
-    am:   ['上班咯', '摸鱼', '火速打卡', '忙里偷闲'],
-    noon: ['吃饭没', '我要睡', '好困', '出去吃嘛'],
-    pm:   ['继续肝', '咖啡加满', '烦死了', '摸摸鱼'],
-    eve:  ['下班回家', '一起玩', '发动态', '逛逛'],
-    night:['睡不着', '听歌', '闲聊', '还醒着'],
-    tail: ['哈哈','欸','唔','喵','诶嘿']
+    cute: /可爱|软|撒娇|黏人|奶|温柔|甜|乖|元气/.test(p),
+    cold: /冷淡|冷静|克制|寡言|高冷|疏离|理性/.test(p),
+    proud: /傲娇|嘴硬|别扭|毒舌|强势/.test(p),
+    lively: /活泼|开朗|外向|话痨|沙雕|乐子人/.test(p),
+    emo: /敏感|低落|悲观|阴郁|脆弱/.test(p)
   };
+}
+function buildMemberOfflineCorpus(member) {
+  const msgs = allMessages.value
+    .filter(m =>
+      m.role === 'char' &&
+      !m.recalled &&
+      !m.loading &&
+      !m.simulated &&
+      m.type === 'normal' &&
+      (m.senderName || '') === (member.name || '')
+    )
+    .slice(-80);
+
+  const fragments = [];
+  const suffixStats = {};
+  const prefixStats = {};
+
+  for (const m of msgs) {
+    const parts = splitNaturalUnits(m.content);
+    parts.forEach(t => fragments.push(t));
+
+    const tail = (String(m.content).match(/(啊|呀|呢|啦|嘛|欸|诶|哼|哦|哈|哈哈|唔|呜|喔)$/) || [])[1];
+    if (tail) suffixStats[tail] = (suffixStats[tail] || 0) + 1;
+
+    const head = (String(m.content).match(/^(我刚|我现在|我又|刚刚|刚才|现在|今天|这会儿|我还)/) || [])[1];
+    if (head) prefixStats[head] = (prefixStats[head] || 0) + 1;
+  }
+
+  return {
+    fragments: Array.from(new Set(fragments)).filter(t => t.length >= 5 && t.length <= 24).slice(-40),
+    suffixes: Object.entries(suffixStats).sort((a, b) => b[1] - a[1]).map(i => i[0]).slice(0, 6),
+    prefixes: Object.entries(prefixStats).sort((a, b) => b[1] - a[1]).map(i => i[0]).slice(0, 6),
+    style: extractPersonaStyle(member.persona || '')
+  };
+}
+function buildMemberBucketThemes(bucketKey, topics, corpus, member) {
+  const topic = pick(topics) || '';
+  const topicTail = topic ? `，还在想${topic}` : '';
+  const s = corpus.style || {};
+  const poolMap = {
+    dawn: ['我刚醒了一下','我今天起得有点早','这会儿人还是懵的','我刚去洗漱了'],
+    am: ['我刚到这边','我上午有点忙','刚刚又开始忙了','我现在还没完全清醒'],
+    noon: ['我刚吃完东西','我现在真的有点困','中午随便对付了几口','我只想趴一会儿'],
+    pm: ['我下午还有一堆事','刚刚又被叫去忙了','我现在脑子有点木','下午真的有点漫长'],
+    eve: ['我刚刚才闲下来','晚上终于稍微轻松一点了','我现在才有空看消息','刚刚一直在折腾'],
+    night: ['我现在还没睡','我怎么又拖到现在了','这会儿反而有点清醒','我刚刚一直发呆']
+  };
+  const pool = (poolMap[bucketKey] || poolMap.pm).slice();
+
+  if (topic) {
+    pool.push(`我刚刚还想到${topic}`);
+    pool.push(`刚才又碰到${topic}这事了`);
+    pool.push(`我现在还惦记着${topic}`);
+  }
+  if (s.cute) {
+    pool.push(`我刚刚才缓过来一点${topicTail}`);
+    pool.push('我这会儿还有点蔫蔫的');
+  }
+  if (s.cold) {
+    pool.push('刚忙完一阵');
+    pool.push('现在才腾出空');
+  }
+  if (s.proud) {
+    pool.push('刚才忙得要命');
+    pool.push('我现在可算能歇一下了');
+  }
+  if (s.lively) {
+    pool.push('我刚刚又被折腾了一通');
+    pool.push('我下午真是来回乱跑');
+  }
+  if (s.emo) {
+    pool.push('我今天状态有点一般');
+    pool.push('这会儿情绪还是有点闷');
+  }
+  return pool;
+}
+function expandShortTag(text) {
+  const map = {
+    '继续忙': '我还得继续忙一会儿',
+    '不困': '我现在还不困',
+    '在路上': '我现在还在路上',
+    '想聊天': '我现在还挺想说话的',
+    '犯困': '我现在真的有点犯困',
+    '回家路上': '我刚刚还在回来的路上',
+    '看东西': '我刚刚一直在看东西',
+    '刷动态': '我刚刚随手刷了会儿动态',
+    '摸鱼': '我刚刚偷空摸了会儿鱼',
+    '下班': '我这会儿才算下班了'
+  };
+  return map[text] || text;
+}
+function applyRoleFlavor(text, corpus) {
+  let out = String(text || '').trim();
+  const s = corpus.style || {};
+  const prefixes = corpus.prefixes || [];
+  const suffixes = corpus.suffixes || [];
+
+  if (out.length <= 4) out = expandShortTag(out);
+
+  if (!/(我|刚|刚刚|现在|今天|这会儿|刚才)/.test(out)) {
+    const autoPrefix = pick(prefixes) || pick(['我刚刚', '我现在', '刚才', '这会儿']);
+    if (autoPrefix) out = `${autoPrefix}${out.replace(/^我/, '')}`;
+  }
+
+  if (s.cute && Math.random() < 0.35 && !/[啊呀啦呢嘛]$/.test(out)) out += pick(['呀', '啦', '呢']);
+  if (s.proud && Math.random() < 0.25 && !/[。！？!?]$/.test(out)) out += pick(['哼', '呢']);
+  if (s.lively && Math.random() < 0.25 && !/[。！？!?]$/.test(out)) out += pick(['哈哈', '欸']);
+  if (suffixes.length && Math.random() < 0.25) {
+    const sf = pick(suffixes);
+    if (sf && out.length <= 18 && !out.endsWith(sf)) out += sf;
+  }
+
+  out = out.replace(/我现在我/g, '我现在')
+           .replace(/我刚刚我/g, '我刚刚')
+           .replace(/刚才我刚才/g, '刚才')
+           .trim();
+  return out;
+}
+function isNaturalBackfillLine(text) {
+  const raw = String(text || '').trim();
+  const norm = normalizeBackfillText(raw);
+  if (!raw || norm.length < 6) return false;
+  if (BACKFILL_BAD_PHRASES.includes(norm)) return false;
+  if (!/(我|刚|刚刚|现在|今天|这会儿|刚才|有点|真的|还|才|又)/.test(raw)) return false;
+  return true;
+}
+function calcTextSimilarity(a, b) {
+  const x = normalizeBackfillText(a);
+  const y = normalizeBackfillText(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.includes(y) || y.includes(x)) return 0.92;
+  const xs = new Set(x.split(''));
+  const ys = new Set(y.split(''));
+  let same = 0;
+  xs.forEach(ch => { if (ys.has(ch)) same++; });
+  return same / Math.max(xs.size, ys.size, 1);
+}
+function isTooSimilarText(text, recentTexts) {
+  return recentTexts.some(t => calcTextSimilarity(text, t) >= 0.72);
 }
 function styleShortBubble(text) {
   const cuts = text.split(/[,，.。!！?？]/).map(s => s.trim()).filter(Boolean);
@@ -604,21 +787,62 @@ function styleShortBubble(text) {
   const chunks = [];
   for (const c of cuts) {
     if (c.length <= 12) chunks.push(c);
-    else { chunks.push(c.slice(0, 10)); if (c.length > 10) chunks.push(c.slice(10, Math.min(20, c.length))); }
-    if (chunks.length >= 3) break;
+    else {
+      chunks.push(c.slice(0, 12));
+      if (c.length > 12) chunks.push(c.slice(12, Math.min(24, c.length)));
+    }
+    if (chunks.length >= 2) break;
   }
   return chunks.length ? chunks : [text];
 }
+function generateBackfillBubblesForMember(bucketKey, member, recentGeneratedTexts = []) {
+  const topics = getLocalKeywords();
+  const corpus = buildMemberOfflineCorpus(member);
+  const themePool = buildMemberBucketThemes(bucketKey, topics, corpus, member);
+  const historyPool = (corpus.fragments || []).filter(t => {
+    const flavored = applyRoleFlavor(t, corpus);
+    if (!isNaturalBackfillLine(flavored)) return false;
+    if (!topics.length) return true;
+    return topics.some(k => t.includes(k));
+  });
 
-function buildSimText(bucketKey, member) {
-  const t = buildTemplatesFor(member);
-  const body = pick(t[bucketKey] || t.pm);
-  const tail = Math.random() < 0.4 ? (' ' + pick(t.tail)) : '';
-  const kws = getLocalKeywords();
-  const kw = Math.random() < 0.5 && kws.length ? (' ' + pick(kws)) : '';
-  return (body + kw + tail).trim();
+  const recentRealTexts = allMessages.value
+    .filter(m =>
+      m.role === 'char' &&
+      !m.recalled &&
+      !m.loading &&
+      (m.senderName || '') === (member.name || '')
+    )
+    .slice(-12)
+    .map(m => m.content);
+
+  for (let i = 0; i < 8; i++) {
+    let candidate = '';
+    if (historyPool.length && Math.random() < 0.48) candidate = pick(historyPool);
+    else candidate = pick(themePool);
+
+    candidate = expandShortTag(String(candidate || '').trim());
+    candidate = applyRoleFlavor(candidate, corpus);
+
+    if (!isNaturalBackfillLine(candidate)) continue;
+    if (isTooSimilarText(candidate, recentGeneratedTexts)) continue;
+    if (isTooSimilarText(candidate, recentRealTexts)) continue;
+
+    return styleShortBubble(candidate).filter(Boolean);
+  }
+
+  const fallback = applyRoleFlavor(
+    pick([
+      '我刚刚才闲下来',
+      '我现在才有空看消息',
+      '我下午真的有点忙',
+      '这会儿我人还是有点懵',
+      '我刚刚一直在折腾'
+    ]),
+    corpus
+  );
+  return [fallback];
 }
-
 function distributeIntoBatches(total, weights) {
   if (total <= 0) return [];
   const entries = Object.entries(weights);
@@ -649,8 +873,13 @@ async function doBackfillGroup() {
   const lastBackfill = (await dbGet(`last_backfill_${threadKey}`)) || 0;
   const lastMyMsgTs = allMessages.value.filter(m => m.role === 'user' && !m.recalled && !m.loading).slice(-1)[0]?.timestamp || 0;
 
-  if (!lastSeen) { await dbSet(`last_seen_${threadKey}`, now); return; }
+  if (!lastSeen) {
+    addRoomLog(`[回填跳过] 首次进入 线程=${threadKey}`);
+    await dbSet(`last_seen_${threadKey}`, now);
+    return;
+  }
   if (now - lastMyMsgTs < COOLDOWN_MS) {
+    addRoomLog(`[回填跳过] 冷却中 距离你上次发言不足${Math.floor(COOLDOWN_MS / 60000)}分钟`);
     await dbSet(`last_seen_${threadKey}`, now);
     return;
   }
@@ -660,6 +889,7 @@ async function doBackfillGroup() {
   let total = decideBackfillCount(gap);
   total = Math.min(total, BACKFILL_MAX_TOTAL);
   if (total <= 0) {
+    addRoomLog(`[回填跳过] gap过短`);
     await dbSet(`last_seen_${threadKey}`, now);
     await dbSet(`last_backfill_${threadKey}`, now);
     return;
@@ -669,32 +899,42 @@ async function doBackfillGroup() {
   const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
   const batches = distributeIntoBatches(total, weights);
 
-  addRoomLog(`正在补齐离线期间消息（${total}条）`);
+  addRoomLog(`[回填开始] 线程=group_${roomId} gap=${formatGapLabel(gap)} 计划=${total}条 批次=${batches.length}`);
 
   const inserts = [];
+  const generatedTexts = [];
   let cursorTs = gapStart + 2 * 60 * 1000;
 
   for (const b of batches) {
+    addRoomLog(`[回填批次] 时段=${bucketLabel(b.bucket)} 计划=${b.count}条`);
     const batchGap = randInt(30, 120) * 60 * 1000;
     cursorTs += batchGap;
 
-    // 批次中挑1~2个成员互动
     const speakers = [];
     const ms = members.value || [];
     if (ms.length === 0) break;
 
     const first = pick(ms);
     speakers.push(first);
-    if (Math.random() < 0.6 && ms.length > 1) {
+
+    if (Math.random() < 0.65 && ms.length > 1) {
       let second = pick(ms);
       let safe = 0;
-      while (second === first && safe++ < 5) second = pick(ms);
+      while (second === first && safe++ < 6) second = pick(ms);
       if (second !== first) speakers.push(second);
     }
 
+    if (Math.random() < 0.28 && ms.length > 2) {
+      let third = pick(ms);
+      let safe = 0;
+      while (speakers.includes(third) && safe++ < 8) third = pick(ms);
+      if (third && !speakers.includes(third)) speakers.push(third);
+    }
+
     for (const sp of speakers) {
-      const text = buildSimText(b.bucket, sp);
-      const bubbles = styleShortBubble(text);
+      const bubbles = generateBackfillBubblesForMember(b.bucket, sp, generatedTexts);
+      generatedTexts.push(`${sp.name}:${bubbles.join(' / ')}`);
+
       for (const bubble of bubbles) {
         inserts.push({
           id: cursorTs + Math.floor(Math.random() * 1000),
@@ -709,6 +949,8 @@ async function doBackfillGroup() {
           simulated: true
         });
       }
+
+      addRoomLog(`[回填通过] ${sp.name}：${bubbles.join(' / ')}`);
       cursorTs += randInt(1, 3) * 60 * 1000;
     }
   }
@@ -717,7 +959,7 @@ async function doBackfillGroup() {
   allMessages.value.splice(0, allMessages.value.length, ...merged);
   await saveMessages();
 
-  addRoomLog(`离线消息补齐完成（${inserts.length}条）`);
+  addRoomLog(`[回填完成] 实际插入=${inserts.length}条`);
   await dbSet(`last_seen_${threadKey}`, now);
   await dbSet(`last_backfill_${threadKey}`, now);
 }
