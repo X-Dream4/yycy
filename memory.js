@@ -11,6 +11,24 @@ createApp({
     const currentCharGroups = ref([]);
     const expandedGroups = ref([]);
 
+    // ===== 大记忆系统 (Big Memory) =====
+    const detailTab = ref('big'); // 默认显示大记忆Tab
+    const bigMemoryTab = ref('core'); // 当前选中的大记忆分类，默认是'核心'
+    const bigMemoryCategories = ref([]); // 大记忆的所有分类
+    const bigMemoryMigrateLoading = ref(false);
+    const bigMemoryMigrateResult = ref('');
+    const bigMemoryDb = ref({}); // 大记忆数据暂存
+    const bigMemoryEditShow = ref(false);
+    const bigMemoryEditForm = ref(null);
+    const bigMemoryEditCatKey = ref('');
+    const bigMemoryKeywordShow = ref(false);
+    const bigMemoryKeywordIsGenerating = ref(false);
+    const bigMemoryCompressShow = ref(false);
+    const bigMemoryCompressIsGenerating = ref(false);
+    const bigMemoryCompressCat = ref('');
+    const bigMemoryCompressContent = ref('');
+
+
     const globalSettings = ref({
       injectOn: true,
       myChatsCount: 20,
@@ -51,6 +69,166 @@ createApp({
       const d = new Date(ts);
       return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
     };
+
+    // ========== 大记忆系统核心函数 ==========
+    
+    const loadBigMemory = async (char) => {
+      if (!char) return;
+      const dbData = await dbGet(`charBigMemory_${char.id}`) || {};
+      const cats = await dbGet('bigMemoryCategories') || [
+        { key: 'core', label: '核心记忆', icon: '🎯' },
+        { key: 'background', label: '背景设定', icon: '🌍' },
+        { key: 'experience', label: '重要经历', icon: '✈️' },
+        { key: 'relationship', label: '人际关系', icon: '🤝' },
+        { key: 'preference', label: '喜好厌恶', icon: '❤️' },
+        { key: 'misc', label: '杂项备忘', icon: '📌' },
+      ];
+      bigMemoryCategories.value = cats;
+      bigMemoryDb.value = dbData;
+      detailTab.value = 'big';
+      bigMemoryTab.value = 'core'; // 默认选中核心
+      nextTick(refreshIcons);
+    };
+
+    const saveBigMemory = async () => {
+      if (!currentChar.value) return;
+      await dbSet(`charBigMemory_${currentChar.value.id}`, JSON.parse(JSON.stringify(bigMemoryDb.value)));
+    };
+
+    const getBigMemoryCatItems = (catKey) => {
+      return (bigMemoryDb.value[catKey] || []).slice().sort((a, b) => b.time - a.time);
+    };
+
+    const getBigMemoryCatCount = (catKey) => {
+      return (bigMemoryDb.value[catKey] || []).length;
+    };
+
+    const openBigMemoryEdit = (catKey, item) => {
+      bigMemoryEditCatKey.value = catKey;
+      if (item) { // 编辑
+        bigMemoryEditForm.value = JSON.parse(JSON.stringify(item));
+      } else { // 新增
+        bigMemoryEditForm.value = {
+          id: Date.now(),
+          summary: '',
+          time: Date.now(),
+          score: 0.6,
+          hidden: false,
+          compressed: false,
+          triggerKeywords: []
+        };
+      }
+      bigMemoryEditShow.value = true;
+    };
+
+    const saveBigMemoryEdit = async () => {
+      if (!bigMemoryEditForm.value.summary.trim()) { alert('摘要不能为空'); return; }
+      const catKey = bigMemoryEditCatKey.value;
+      if (!bigMemoryDb.value[catKey]) bigMemoryDb.value[catKey] = [];
+      const items = bigMemoryDb.value[catKey];
+      const idx = items.findIndex(i => i.id === bigMemoryEditForm.value.id);
+      if (idx !== -1) {
+        items[idx] = JSON.parse(JSON.stringify(bigMemoryEditForm.value));
+      } else {
+        items.push(JSON.parse(JSON.stringify(bigMemoryEditForm.value)));
+      }
+      await saveBigMemory();
+      bigMemoryEditShow.value = false;
+    };
+
+    const deleteBigMemoryItem = async (catKey, itemId) => {
+      if (!confirm('确定删除这条大记忆？该操作不可恢复。')) return;
+      if (!bigMemoryDb.value[catKey]) return;
+      const idx = bigMemoryDb.value[catKey].findIndex(i => i.id === itemId);
+      if (idx !== -1) {
+        bigMemoryDb.value[catKey].splice(idx, 1);
+        await saveBigMemory();
+      }
+    };
+
+    const toggleBigMemoryHide = async (catKey, item) => {
+      item.hidden = !item.hidden;
+      await saveBigMemory();
+    };
+
+    const migrateTooBigMemory = async () => {
+        if (!currentChar.value) return;
+        if (!confirm('确定迁移吗？\n该操作会将【原有分类】中的所有记忆和【世界书摘要】同步到【大记忆】中（已有摘要会跳过），原数据不会被删除。')) return;
+
+        bigMemoryMigrateLoading.value = true;
+        bigMemoryMigrateResult.value = '开始迁移...';
+
+        try {
+            const charId = currentChar.value.id;
+            // 1. 加载所有需要的数据
+            const [legacyMems, worldSummaries] = await Promise.all([
+                dbGet(`charMemory_${charId}`) || [],
+                dbGet('worldSummaries') || []
+            ]);
+
+            // 2. 准备现有大记忆摘要，用于去重
+            const existingSummaries = new Set();
+            Object.values(bigMemoryDb.value).flat().forEach(mem => existingSummaries.add(mem.summary.trim()));
+
+            let legacyAdded = 0;
+            let summaryAdded = 0;
+
+            // 3. 迁移原有分类记忆
+            for (const mem of legacyMems) {
+                if (existingSummaries.has(mem.summary.trim())) continue;
+                if (!bigMemoryDb.value.misc) bigMemoryDb.value.misc = [];
+                bigMemoryDb.value.misc.push({
+                    id: mem.id || Date.now() + Math.random(),
+                    summary: mem.summary,
+                    time: mem.time || Date.now(),
+                    score: mem.score || 0.5,
+                    source: `旧版记忆(${mem.withWho || '未知'})`,
+                    hidden: mem.hidden || false,
+                    compressed: false,
+                    triggerKeywords: []
+                });
+                existingSummaries.add(mem.summary.trim());
+                legacyAdded++;
+            }
+            bigMemoryMigrateResult.value = `旧版记忆迁移完成，正在处理世界书摘要...`;
+
+            // 4. 迁移世界书摘要
+            const charName = currentChar.value.name;
+            const relatedSummaries = worldSummaries.filter(s => s.content.includes(charName));
+            for (const summary of relatedSummaries) {
+                const content = `【${summary.bookName}】${summary.content}`;
+                if (existingSummaries.has(content)) continue;
+                if (!bigMemoryDb.value.background) bigMemoryDb.value.background = [];
+                bigMemoryDb.value.background.push({
+                    id: summary.id || Date.now() + Math.random(),
+                    summary: content,
+                    time: summary.time || Date.now(),
+                    score: 0.7, // 世界书摘要默认权重高一些
+                    source: '世界书摘要',
+                    hidden: false,
+                    compressed: false,
+                    triggerKeywords: []
+                });
+                existingSummaries.add(content);
+                summaryAdded++;
+            }
+
+            await saveBigMemory();
+            bigMemoryMigrateResult.value = `迁移成功！新增旧版记忆 ${legacyAdded} 条，世界书摘要 ${summaryAdded} 条。`;
+        } catch (e) {
+            console.error('迁移失败', e);
+            bigMemoryMigrateResult.value = `迁移失败: ${e.message}`;
+        } finally {
+            bigMemoryMigrateLoading.value = false;
+        }
+    };
+    
+    // 关键词和压缩功能留空，后续填充
+    const openKeywordEdit = (catKey, item) => { alert('功能开发中'); };
+    const saveKeywordEdit = async () => { alert('功能开发中'); };
+    const openCompressPanel = (catKey) => { alert('功能开发中'); };
+
+    // ========== 旧版记忆函数 ==========
 
     const loadAllData = async () => {
       const dark = await dbGet('darkMode');
@@ -98,7 +276,11 @@ createApp({
 
     const openCharDetail = async (char) => {
       currentChar.value = char;
-      await loadCharMemories(char.id);
+      // 同时加载新旧两种记忆
+      await Promise.all([
+        loadCharMemories(char.id),
+        loadBigMemory(char)
+      ]);
       nextTick(() => refreshIcons());
     };
 
@@ -247,16 +429,21 @@ createApp({
     };
 
     const openAddMemory = () => {
-      editMemoryIsNew.value = true;
-      editMemoryId.value = null;
-      editMemoryForm.value = {
-        summary: '',
-        score: 0.5,
-        type: 'private',
-        withWho: '',
-        sourceFrom: ''
-      };
-      editMemoryShow.value = true;
+      // 检查当前是否在大记忆TAB
+      if (detailTab.value === 'big') {
+        openBigMemoryEdit(bigMemoryTab.value, null);
+      } else {
+        editMemoryIsNew.value = true;
+        editMemoryId.value = null;
+        editMemoryForm.value = {
+          summary: '',
+          score: 0.5,
+          type: 'private',
+          withWho: '',
+          sourceFrom: ''
+        };
+        editMemoryShow.value = true;
+      }
     };
 
     const saveEditMemory = async () => {
@@ -316,6 +503,12 @@ createApp({
     };
 
     onMounted(async () => {
+      const savedGlobalCss = await dbGet('globalCss');
+      if (savedGlobalCss) {
+        let el = document.getElementById('global-custom-css');
+        if (!el) { el = document.createElement('style'); el.id = 'global-custom-css'; document.head.appendChild(el); }
+        el.textContent = savedGlobalCss;
+      }
       await loadAllData();
       setTimeout(() => lucide.createIcons(), 100);
     });
@@ -331,7 +524,33 @@ createApp({
       openInjectEdit, isInjectMyChatSelected, isInjectGroupSelected,
       toggleInjectMyChat, toggleInjectGroup, clearInjectOverride, saveInjectEdit,
       openEditMemory, openAddMemory, saveEditMemory,
-      toggleHideMemory, deleteMemory, toggleShowAllChars
+      toggleHideMemory, deleteMemory, toggleShowAllChars,
+
+      // ===== 大记忆系统 =====
+      detailTab,
+      bigMemoryTab,
+      bigMemoryCategories,
+      bigMemoryMigrateLoading,
+      bigMemoryMigrateResult,
+      bigMemoryEditShow,
+      bigMemoryEditForm,
+      bigMemoryKeywordShow,
+      bigMemoryKeywordIsGenerating,
+      bigMemoryCompressShow,
+      bigMemoryCompressIsGenerating,
+      bigMemoryCompressCat,
+      bigMemoryCompressContent,
+      loadBigMemory,
+      getBigMemoryCatItems,
+      getBigMemoryCatCount,
+      openBigMemoryEdit,
+      saveBigMemoryEdit,
+      deleteBigMemoryItem,
+      toggleBigMemoryHide,
+      migrateToBigMemory: migrateTooBigMemory,
+      openKeywordEdit,
+      saveKeywordEdit,
+      openCompressPanel,
     };
   }
 }).mount('#memory-app');

@@ -786,11 +786,57 @@ createApp({
       }
       const savedFontSize = await dbGet('customFontSize');
       if (savedFontSize) { globalFontSize.value = savedFontSize; applyGlobalFontSize(); }
+      const savedGlobalCss = await dbGet('globalCss');
+      if (savedGlobalCss) { globalCssInput.value = savedGlobalCss; applyGlobalCss(); }
+      const savedGlobalCssPresets = await dbGet('globalCssPresets');
+      if (savedGlobalCssPresets) globalCssPresets.value = savedGlobalCssPresets;
+
       refreshIcons();
       addLog('喜欢App已打开');
       setTimeout(() => { lucide.createIcons(); refreshIcons(); }, 100);
       setTimeout(() => lucide.createIcons(), 500);
     });
+    const globalCssInput = ref('');
+    const globalCssPresets = ref([]);
+    const globalCssPresetName = ref('');
+
+    const applyGlobalCss = () => {
+      let el = document.getElementById('global-custom-css');
+      if (!el) { el = document.createElement('style'); el.id = 'global-custom-css'; document.head.appendChild(el); }
+      el.textContent = globalCssInput.value;
+    };
+
+    const saveGlobalCss = async () => {
+      await dbSet('globalCss', globalCssInput.value);
+      applyGlobalCss();
+      addLog('全局CSS已保存');
+    };
+
+    const clearGlobalCss = async () => {
+      globalCssInput.value = '';
+      await dbSet('globalCss', '');
+      applyGlobalCss();
+      addLog('全局CSS已清空');
+    };
+
+    const saveGlobalCssPreset = async () => {
+      if (!globalCssInput.value.trim()) { addLog('请先输入CSS', 'warn'); return; }
+      const name = globalCssPresetName.value.trim() || `CSS预设 ${globalCssPresets.value.length + 1}`;
+      globalCssPresets.value.push({ name, css: globalCssInput.value });
+      globalCssPresetName.value = '';
+      await dbSet('globalCssPresets', JSON.parse(JSON.stringify(globalCssPresets.value)));
+      addLog('CSS预设已保存');
+    };
+
+    const deleteGlobalCssPreset = async (i) => {
+      globalCssPresets.value.splice(i, 1);
+      await dbSet('globalCssPresets', JSON.parse(JSON.stringify(globalCssPresets.value)));
+    };
+
+    const loadGlobalCssPreset = (p) => {
+      globalCssInput.value = p.css;
+      applyGlobalCss();
+    };
 
     return {
       tab, api, modelList, apiPresets, presetName, showPresetPanel, showModelDrop, selectModel,
@@ -812,6 +858,9 @@ createApp({
       exportBeauty, triggerImportBeauty, importBeauty,
       exportSingleChar, triggerImportChar, importSingleChar,
       memoryDetails, memoryDonut, memoryTotal, memoryLoading, loadMemory,
+      globalCssInput, globalCssPresets, globalCssPresetName,
+      applyGlobalCss, saveGlobalCss, clearGlobalCss,
+      saveGlobalCssPreset, deleteGlobalCssPreset, loadGlobalCssPreset,
     };
   }
 }).mount('#like-app');

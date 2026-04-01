@@ -1,10 +1,21 @@
 // 全局通知系统
 const NOTIFY_KEY = 'pendingNotifications';
 
+// 用 IndexedDB 替代 localStorage
+async function notifyDbSet(val) {
+  try { await dbSet(NOTIFY_KEY, val); } catch(e) {}
+}
+async function notifyDbGet() {
+  try { return (await dbGet(NOTIFY_KEY)) || []; } catch(e) { return []; }
+}
+async function notifyDbClear() {
+  try { await dbSet(NOTIFY_KEY, []); } catch(e) {}
+}
+
 // 发送通知（在 chatroom.js 里调用）
 async function sendCharNotification(charName, content, charAvatar) {
-  // 1. 写入 localStorage 供其他页面读取
-  const pending = JSON.parse(localStorage.getItem(NOTIFY_KEY) || '[]');
+  // 1. 写入 IndexedDB 供其他页面读取
+  const pending = await notifyDbGet();
   pending.push({
     id: Date.now(),
     charName,
@@ -14,7 +25,7 @@ async function sendCharNotification(charName, content, charAvatar) {
   });
   // 只保留最近10条
   if (pending.length > 10) pending.splice(0, pending.length - 10);
-  localStorage.setItem(NOTIFY_KEY, JSON.stringify(pending));
+  await notifyDbSet(pending);
 
   // 2. 浏览器系统通知
   if ('Notification' in window && Notification.permission === 'granted') {
@@ -34,26 +45,30 @@ async function requestNotifyPermission() {
   return result === 'granted';
 }
 
-// 在其他页面监听通知
-
-// 在各个页面的 onMounted 里调用此函数
-function listenForNotifications(currentPageName) {
-  // 监听 storage 事件（其他标签页写入时触发）
-  window.addEventListener('storage', (e) => {
-    if (e.key !== NOTIFY_KEY) return;
-    const pending = JSON.parse(e.newValue || '[]');
-    if (!pending.length) return;
-    // 显示最新一条
-    const latest = pending[pending.length - 1];
-    showInAppToast(latest.charName, latest.content, latest.avatar);
-    // 清空已显示的
-    localStorage.removeItem(NOTIFY_KEY);
-  });
+// 在各个页面的 onMounted 里调用此函数，轮询检测新通知
+function listenForNotifications() {
+  let lastId = 0;
+  setInterval(async () => {
+    try {
+      const pending = await notifyDbGet();
+      if (!pending.length) return;
+      const latest = pending[pending.length - 1];
+      if (latest.id === lastId) return;
+      lastId = latest.id;
+      // 只显示非当前页面发出的通知（当前页面自己发的不弹）
+      const isCurrentPage = typeof charName !== 'undefined'
+        && typeof charName.value !== 'undefined'
+        && latest.charName === charName.value;
+      if (!isCurrentPage) {
+        showInAppToast(latest.charName, latest.content, latest.avatar);
+      }
+      await notifyDbClear();
+    } catch(e) {}
+  }, 1500);
 }
 
 // 应用内浮窗提示
 function showInAppToast(charName, content, avatar) {
-  // 如果已有 toast 就移除
   const existing = document.getElementById('char-notify-toast');
   if (existing) existing.remove();
 
@@ -92,7 +107,6 @@ function showInAppToast(charName, content, avatar) {
   toast.appendChild(avatarEl);
   toast.appendChild(textEl);
 
-  // 注入动画样式
   if (!document.getElementById('toast-style')) {
     const s = document.createElement('style');
     s.id = 'toast-style';
@@ -105,7 +119,6 @@ function showInAppToast(charName, content, avatar) {
 
   document.body.appendChild(toast);
 
-  // 4秒后自动消失
   const dismiss = () => {
     toast.style.animation = 'toastOut 0.3s ease forwards';
     setTimeout(() => toast.remove(), 300);

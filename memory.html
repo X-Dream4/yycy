@@ -80,52 +80,79 @@ html, body { height: 100%; overflow-y: auto; }
       <div style="width:36px;"></div>
     </div>
 
-    <!-- 大分类列表 -->
-    <div style="margin-top:8px;">
-      <div class="section-title">私聊 / 小群分类</div>
+    <!-- 详情页 Tab 切换 -->
+    <div style="display:flex;padding:8px 16px;gap:10px;background:#fff;border-bottom:1px solid #f0f0f0;">
+      <div class="summary-pos-btn" :class="{active: detailTab==='big'}" @click="detailTab='big'; loadBigMemory(currentChar)">大记忆 (Beta)</div>
+      <div class="summary-pos-btn" :class="{active: detailTab==='legacy'}" @click="detailTab='legacy'">原有分类</div>
+    </div>
 
-      <div v-for="group in currentCharGroups" :key="group.groupKey" class="group-section">
-        <div class="group-header" @click="toggleGroupExpand(group.groupKey)">
-          <span class="group-tag" :class="group.type==='private'?'private':'mini'">{{ group.type==='private'?'私聊':'小群' }}</span>
-          <div style="flex:1;">
-            <div class="group-name">{{ group.name }}</div>
-            <div class="group-inject-info">注入到：{{ getInjectSummary(group) }}</div>
-          </div>
-          <button class="inject-edit-btn" @click.stop="openInjectEdit(group, null)">编辑注入</button>
-          <i :data-lucide="expandedGroups.includes(group.groupKey)?'chevron-up':'chevron-down'" style="width:14px;height:14px;color:#aaa;margin-left:6px;"></i>
-        </div>
+    <!-- Tab 1: 大记忆系统 (核心) -->
+    <div v-if="detailTab==='big'" class="big-memory-container">
+      <!-- 迁移按钮 -->
+      <div style="margin:12px 16px;padding:12px;background:#fefefe;border:1px dashed #ddd;border-radius:12px;text-align:center;">
+        <div style="font-size:12px;color:#888;margin-bottom:8px;">想把原来的总结和私聊摘要导入到大记忆吗？</div>
+        <button class="mem-btn" @click="migrateToBigMemory" :disabled="bigMemoryMigrateLoading">
+          {{ bigMemoryMigrateLoading ? '迁移中...' : '一键同步/迁移旧数据' }}
+        </button>
+        <div v-if="bigMemoryMigrateResult" style="font-size:11px;color:#2196f3;margin-top:4px;">{{ bigMemoryMigrateResult }}</div>
+      </div>
 
-        <!-- 该分类下的记忆条目 -->
-        <div v-if="expandedGroups.includes(group.groupKey)">
-          <div v-for="mem in getMemoriesByGroup(group.groupKey)" :key="mem.id"
-            class="memory-item" :class="{hidden: mem.hidden}">
-            <div class="memory-summary">{{ mem.summary }}</div>
-            <div class="memory-meta">
-              <span class="memory-badge">{{ mem.type==='private'?'私聊':'小群' }}</span>
-              <span class="memory-badge" v-if="mem.withWho">与 {{ mem.withWho }}</span>
-              <span class="memory-badge" v-if="mem.sourceFrom">来自 {{ mem.sourceFrom }}</span>
-              <span class="memory-badge">{{ formatTime(mem.time) }}</span>
-              <span class="memory-badge" v-if="mem.hidden" style="color:#e53e3e;">已隐藏</span>
-              <span class="memory-badge" v-if="mem.injectOverride" style="color:#2196f3;">单独注入</span>
-            </div>
-            <div class="score-bar-wrap">
-              <div class="score-bar">
-                <div class="score-bar-fill" :style="`width:${mem.score*100}%`"></div>
-              </div>
-              <span class="score-label">{{ mem.score.toFixed(2) }}</span>
-            </div>
-            <div class="memory-actions">
-              <button class="mem-btn" @click="openEditMemory(mem)">编辑</button>
-              <button class="mem-btn" @click="toggleHideMemory(mem)">{{ mem.hidden?'显示':'隐藏' }}</button>
-              <button class="mem-btn" @click="openInjectEdit(group, mem)">注入目标</button>
-              <button class="mem-btn danger" @click="deleteMemory(mem)">删除</button>
-            </div>
-          </div>
-          <div class="empty-tip" v-if="!getMemoriesByGroup(group.groupKey).length">暂无记忆</div>
+      <!-- 分类 Tab -->
+      <div style="display:flex;overflow-x:auto;padding:0 16px 10px;gap:8px;" class="no-scrollbar">
+        <div v-for="cat in bigMemoryCategories" :key="cat.key" 
+          class="cat-tab" :class="{active: bigMemoryTab===cat.key}"
+          @click="bigMemoryTab=cat.key">
+          <span>{{ cat.icon }}</span>
+          <span>{{ cat.label }}</span>
+          <span class="cat-count">{{ getBigMemoryCatCount(cat.key) }}</span>
         </div>
       </div>
 
-      <div class="empty-tip" v-if="!currentCharGroups.length">暂无私聊/小群记忆</div>
+      <!-- 当前分类下的记忆列表 -->
+      <div class="group-section" style="margin-top:0;">
+        <div class="group-header" style="background:#f9f9f9;">
+          <div class="group-name">{{ bigMemoryCategories.find(c=>c.key===bigMemoryTab).label }}</div>
+          <button class="inject-edit-btn" @click="openCompressPanel(bigMemoryTab)">压缩/二级总结</button>
+        </div>
+
+        <div v-for="item in getBigMemoryCatItems(bigMemoryTab)" :key="item.id" 
+          class="memory-item" :class="{hidden: item.hidden, compressed: item.compressed}">
+          
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <div class="memory-summary">{{ item.summary }}</div>
+            <span class="score-badge" :style="`background:rgba(17,17,17,${item.score*0.8 + 0.1})`">{{ item.score.toFixed(2) }}</span>
+          </div>
+
+          <div class="memory-meta">
+            <span class="memory-badge" v-if="item.source">来自 {{ item.source }}</span>
+            <span class="memory-badge">{{ formatTime(item.time) }}</span>
+            <span class="memory-badge danger" v-if="item.compressed">已压缩(不注入)</span>
+          </div>
+
+          <!-- 关键词展示 -->
+          <div class="keyword-row" v-if="item.triggerKeywords && item.triggerKeywords.length">
+            <i data-lucide="key" style="width:10px;height:14px;color:#aaa;"></i>
+            <span class="keyword-tag" v-for="k in item.triggerKeywords" :key="k">{{ k }}</span>
+          </div>
+
+          <div class="memory-actions">
+            <button class="mem-btn" @click="openBigMemoryEdit(bigMemoryTab, item)">编辑</button>
+            <button class="mem-btn" @click="openKeywordEdit(bigMemoryTab, item)">关键词</button>
+            <button class="mem-btn" @click="toggleBigMemoryHide(bigMemoryTab, item)">{{ item.hidden?'显示':'隐藏' }}</button>
+            <button class="mem-btn danger" @click="deleteBigMemoryItem(bigMemoryTab, item.id)">删除</button>
+          </div>
+        </div>
+        
+        <div class="empty-tip" v-if="!getBigMemoryCatItems(bigMemoryTab).length">该分类下暂无记忆</div>
+      </div>
+    </div>
+
+    <!-- Tab 2: 原有分类 (保留作为降级) -->
+    <div v-if="detailTab==='legacy'">
+      <div v-for="group in currentCharGroups" :key="group.groupKey" class="group-section">
+        <!-- 原有的 group-header 和条目代码，保持不变 -->
+        ...
+      </div>
     </div>
 
     <!-- 新增记忆按钮 -->

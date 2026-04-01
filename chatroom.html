@@ -205,6 +205,13 @@
         <div class="modal-item"><label>角色人设</label><textarea class="modal-textarea" v-model="charPersonaInput" placeholder="角色的性格、背景..."></textarea></div>
         <div class="modal-item"><label>AI可读取消息条数</label><input class="modal-input" type="number" v-model="aiReadCountInput" min="5" max="200" placeholder="默认20条" /></div>
         <div class="modal-item">
+  <div style="display:flex;align-items:center;justify-content:space-between;">
+    <span style="font-size:13px;color:#555;font-weight:500;">记忆智能检索</span>
+    <div class="toggle" :class="{on: memorySearchOn}" @click="memorySearchOn=!memorySearchOn"></div>
+  </div>
+  <div style="font-size:11px;color:#aaa;margin-top:2px;">开启后根据当前对话内容检索最相关的记忆注入，关闭则按重要性排序注入</div>
+</div>
+<div class="modal-item">
           <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#555;">
             <span>角色知道当前实时时间</span>
             <div class="toggle" :class="{on: realtimeTimeOn}" @click="realtimeTimeOn=!realtimeTimeOn"></div>

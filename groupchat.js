@@ -178,7 +178,99 @@ createApp({
     const mirrorHistoryShow = ref(false);
     const whisperText = ref('');
     const apiConfig = ref({ url: '', key: '', model: '' });
-// ===== 社交圈 =====
+    const memorySearchOn = ref(true);
+    let memorySearchCache = null;
+    let memorySearchTimer = null;
+
+    const localMemorySearch = (query, memories, topN = 10) => {
+      if (!query || !memories || !memories.length) return [];
+      const queryChars = new Set(query.replace(/[\s\n]/g, '').split(''));
+      if (queryChars.size === 0) return memories.slice(0, topN);
+      return memories
+        .filter(m => !m.hidden)
+        .map(m => {
+          const text = (m.summary || m.content || '').replace(/[\s\n]/g, '');
+          let overlap = 0;
+          for (const ch of queryChars) { if (text.includes(ch)) overlap++; }
+          const relevance = overlap / queryChars.size;
+          const finalScore = relevance * 0.6 + (parseFloat(m.score) || 0.5) * 0.4;
+          return { ...m, finalScore };
+        })
+        .sort((a, b) => b.finalScore - a.finalScore)
+        .slice(0, topN);
+    };
+
+    const runMemorySearch = async () => {
+      const recentQuery = allMessages.value
+        .filter(m => !m.recalled && !m.loading)
+        .slice(-5)
+        .map(m => m.content)
+        .join(' ');
+
+      const cache = { memberMems: {}, beforeSummaries: [], afterSummaries: [] };
+
+      const memGS = JSON.parse(JSON.stringify((await dbGet('memoryGlobalSettings')) || {}));
+      const memInjectOn = memGS.injectOn !== false;
+      const memGroupInjectCount = parseInt(memGS.groupsCount) || 3;
+
+      if (memInjectOn) {
+        const allCharListForMem = JSON.parse(JSON.stringify((await dbGet('charList')) || []));
+        for (const member of members.value) {
+          const memberChar = allCharListForMem.find(c => c.name === member.name);
+          if (!memberChar) continue;
+          const memData = JSON.parse(JSON.stringify((await dbGet(`charMemory_${memberChar.id}`)) || []));
+          const memGroups = JSON.parse(JSON.stringify((await dbGet(`charMemoryGroups_${memberChar.id}`)) || []));
+          const validMems = memData.filter(m => {
+            if (m.hidden) return false;
+            let injectTo;
+            if (m.injectOverride) { injectTo = m.injectOverride; }
+            else {
+              const grp = memGroups.find(g => g.groupKey === m.groupKey);
+              injectTo = grp ? grp.injectTo : { myChats: [], groups: [roomId] };
+            }
+            return injectTo && injectTo.groups && injectTo.groups.includes(roomId);
+          });
+
+          // 根据开关决定：走智能检索还是按权重排序
+          cache.memberMems[member.name] = memorySearchOn.value
+            ? localMemorySearch(recentQuery, validMems, memGroupInjectCount)
+            : validMems.slice().sort((a, b) => b.score - a.score).slice(0, memGroupInjectCount);
+        }
+      }
+
+      // 检索回忆摘要 (summaries)
+      const summaryMems = summaries.value.map(s => ({ ...s, summary: s.content, score: 0.5 }));
+      const beforeList = summaryMems.filter(s => s.pos === 'before_history');
+      const afterList = summaryMems.filter(s => s.pos === 'after_system');
+
+      cache.beforeSummaries = memorySearchOn.value
+        ? localMemorySearch(recentQuery, beforeList, 5)
+        : beforeList.slice(0, 5);
+      cache.afterSummaries = memorySearchOn.value
+        ? localMemorySearch(recentQuery, afterList, 5)
+        : afterList.slice(0, 5);
+
+      memorySearchCache = cache;
+
+      // 输出详细日志
+      const logParts = [];
+      const memberDetails = Object.entries(cache.memberMems)
+        .filter(([, mems]) => mems.length > 0)
+        .map(([name, mems]) => `${name}: ${mems.map(m => m.summary.slice(0, 8) + '…').join('、')}`);
+      
+      if (memberDetails.length) logParts.push(`【成员记忆】${memberDetails.join(' | ')}`);
+      const sumCount = cache.beforeSummaries.length + cache.afterSummaries.length;
+      if (sumCount > 0) logParts.push(`【相关摘要】${sumCount}条`);
+
+      addRoomLog(`记忆预检索完成(${memorySearchOn.value ? '智能模式' : '权重模式'})：${logParts.length ? logParts.join('，') : '未发现匹配记忆'}`);
+    };
+
+    const scheduleMemorySearch = () => {
+      clearTimeout(memorySearchTimer);
+      memorySearchTimer = setTimeout(() => { runMemorySearch(); }, 300);
+    };
+
+    // ===== 社交圈 =====
 const socialCircleOn = ref(false);
 const socialInjectCount = ref(5);
 const socialInjectOn = ref(true);
@@ -544,15 +636,16 @@ const collectTheaterRoom = async (content) => {
       const msg = { id: Date.now(), role: 'user', content: text, type: 'normal', senderName: myName.value, memberId: null, quoteId: quotingMsg.value ? quotingMsg.value.id : null, recalled: false, revealed: false };
       allMessages.value.push(msg); inputText.value = ''; quotingMsg.value = null; toolbarOpen.value = false;
       if (inputRef.value) inputRef.value.style.height = 'auto';
-      await saveMessages(); nextTick(() => { scrollToBottom(); refreshIcons(); });
+      await saveMessages(); scheduleMemorySearch(); nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
 
     const sendWhisper = async () => {
       if (!whisperText.value.trim()) return; myWhisperShow.value = false;
       const msg = { id: Date.now(), role: 'user', content: whisperText.value.trim(), type: 'whisper', senderName: myName.value, memberId: null, quoteId: null, recalled: false, revealed: false };
       allMessages.value.push(msg); whisperText.value = '';
-      await saveMessages(); nextTick(() => { scrollToBottom(); refreshIcons(); });
+      await saveMessages(); scheduleMemorySearch(); nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
+
 // ===== 角色记忆写入 =====
 const writeCharMemory = async (targetCharId, memItem) => {
   const key = `charMemory_${targetCharId}`;
@@ -954,35 +1047,21 @@ ${existingSubGroupMsgsText ? '【小群之前的聊天记录】\n' + existingSub
         return names.length ? `${m.name}可用表情包：${names.join('、')}` : '';
       }).filter(Boolean).join('\n');
 
-      const beforeHistorySummaries = summaries.value.filter(s => s.pos === 'before_history').map(s => ({ role: 'system', content: `【回忆摘要】${s.content}` }));
-      const afterSystemSummaries = summaries.value.filter(s => s.pos === 'after_system').map(s => `【回忆摘要】${s.content}`).join('；');
+      const beforeHistorySummaries = (memorySearchCache?.beforeSummaries || summaries.value.filter(s => s.pos === 'before_history'))
+        .map(s => ({ role: 'system', content: `【回忆摘要】${s.content}` }));
+      const afterSystemSummaries = (memorySearchCache?.afterSummaries || summaries.value.filter(s => s.pos === 'after_system'))
+        .map(s => `【回忆摘要】${s.content}`).join('；');
       // 读取每个成员的私人记忆
       const memGlobalSettings = JSON.parse(JSON.stringify((await dbGet('memoryGlobalSettings')) || {}));
       const memInjectOn = memGlobalSettings.injectOn !== false;
       const memGroupInjectCount = parseInt(memGlobalSettings.groupsCount) || 3;
+      if (!memorySearchCache) await runMemorySearch();
       const memberMemoryTexts = {};
-      if (memInjectOn) {
-        const allCharListForMem = JSON.parse(JSON.stringify((await dbGet('charList')) || []));
-        for (const member of members.value) {
-          const memberChar = allCharListForMem.find(c => c.name === member.name);
-          if (!memberChar) continue;
-          const memData = JSON.parse(JSON.stringify((await dbGet(`charMemory_${memberChar.id}`)) || []));
-          const memGroups = JSON.parse(JSON.stringify((await dbGet(`charMemoryGroups_${memberChar.id}`)) || []));
-          const validMems = memData.filter(m => {
-            if (m.hidden) return false;
-            let injectTo;
-            if (m.injectOverride) {
-              injectTo = m.injectOverride;
-            } else {
-              const grp = memGroups.find(g => g.groupKey === m.groupKey);
-              injectTo = grp ? grp.injectTo : { myChats: [], groups: [roomId] };
-            }
-            return injectTo && injectTo.groups && injectTo.groups.includes(roomId);
-          });
-          const topMems = validMems.slice().sort((a, b) => b.score - a.score).slice(0, memGroupInjectCount);
-          if (topMems.length) {
-            memberMemoryTexts[member.name] = topMems.map(m => `[${m.score.toFixed(2)}] ${m.summary}`).join('；');
-          }
+      const cachedMemberMems = memorySearchCache?.memberMems || {};
+      for (const member of members.value) {
+        const mems = cachedMemberMems[member.name] || [];
+        if (mems.length) {
+          memberMemoryTexts[member.name] = mems.map(m => `[${m.score.toFixed(2)}] ${m.summary}`).join('；');
         }
       }
       const memberMemorySection = Object.keys(memberMemoryTexts).length
@@ -1237,6 +1316,7 @@ if (collectMatch) {
             }
           }
         }
+        memorySearchCache = null;
         addRoomLog(`API回复成功，共${lines.length}条`);
 addRoomLog(`原始回复：${reply}`);
       } catch (e) {
@@ -1356,6 +1436,13 @@ alert('连接失败：' + e.message);
       const roomList = JSON.parse(JSON.stringify((await dbGet('roomList')) || []));
       const rIdx = roomList.findIndex(r => r.id === roomId);
       if (rIdx !== -1) { roomList[rIdx].aiReadCount = aiReadCount.value; roomList[rIdx].selectedWorldBooks = JSON.parse(JSON.stringify(selectedWorldBooks.value)); roomList[rIdx].socialCircleOn = socialCircleOn.value; roomList[rIdx].socialInjectCount = socialInjectCount.value; roomList[rIdx].socialInjectOn = socialInjectOn.value; await dbSet('roomList', roomList); }
+      const rId = params.get('roomId');
+    if (cwMode === 'room' && rId) {
+      await dbSet(`memorySearchOn_room_${rId}`, memorySearchOn.value);
+    } else {
+      await dbSet(`memorySearchOn_${charId}`, memorySearchOn.value);
+    }
+    await dbSet('charList', charList);
     };
 
     const openDimensionLink = () => { toolbarOpen.value = false; dimensionShow.value = true; nextTick(() => refreshIcons()); };
@@ -1888,6 +1975,12 @@ const onMouseUp = () => { clearTimeout(longPressTimer); };
     };
 
     onMounted(async () => {
+      const savedGlobalCss = await dbGet('globalCss');
+      if (savedGlobalCss) {
+        let el = document.getElementById('global-custom-css');
+        if (!el) { el = document.createElement('style'); el.id = 'global-custom-css'; document.head.appendChild(el); }
+        el.textContent = savedGlobalCss;
+      }
     if (typeof listenForNotifications === 'function') listenForNotifications();
 if (typeof requestNotifyPermission === 'function') requestNotifyPermission();
 
@@ -1913,7 +2006,6 @@ if (typeof requestNotifyPermission === 'function') requestNotifyPermission();
       ]);
 
       if (dark) document.body.classList.add('dark');
-      if (wp) { document.body.style.backgroundImage = `url(${wp})`; document.body.style.backgroundSize = 'cover'; document.body.style.backgroundPosition = 'center'; }
 const [groupTheaterPresetsData, groupTheaterHtmlPresetsData, groupTheaterHistoryData, groupTheaterStylePresetsData] = await Promise.all([
   dbGet(`groupTheaterPresets_${roomId}`),
   dbGet(`groupTheaterHtmlPresets_${roomId}`),
@@ -1983,6 +2075,10 @@ if (autoSendData) {
       if (savedPeekHistory) peekHistory.value = savedPeekHistory;
       const savedMirrorHistory = await dbGet(`groupMirrorHistory_${roomId}`);
       if (savedMirrorHistory) mirrorHistory.value = savedMirrorHistory;
+const rId = params.get('roomId');
+const searchModeKey = (cwMode === 'room' && rId) ? `memorySearchOn_room_${rId}` : `memorySearchOn_${charId}`;
+const savedMemorySearchOn = await dbGet(searchModeKey);
+if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) memorySearchOn.value = savedMemorySearchOn;
 
       try { await loadBeauty(); } catch(e) { console.warn('loadBeauty error:', e); }
 
@@ -2069,6 +2165,7 @@ collectPeekHistory, collectMirrorHistory, htmlViewWidth, htmlViewHeight, htmlVie
 openPeekHistory, openMirrorHistory,
       deletePeekHistory, deleteMirrorHistory,
 socialCircleOn, socialInjectCount, socialInjectOn, writeCharMemory,
+memorySearchOn,
 
     };
   }

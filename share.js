@@ -195,6 +195,12 @@ createApp({
     };
 
     onMounted(async () => {
+      const savedGlobalCss = await dbGet('globalCss');
+      if (savedGlobalCss) {
+        let el = document.getElementById('global-custom-css');
+        if (!el) { el = document.createElement('style'); el.id = 'global-custom-css'; document.head.appendChild(el); }
+        el.textContent = savedGlobalCss;
+      }
       const savedFont = await dbGet('customFont');
       if (savedFont && savedFont.src) {
         let style = document.getElementById('custom-font-style');
