@@ -1576,7 +1576,31 @@ const lines = processedReply.split('\n').map(l => l.trim()).filter(l => l.length
               continue;
             }
 
+            const ownerChar = {
+              id: charId,
+              name: charName.value,
+              avatar: charAvatar.value || '',
+              persona: charPersona.value || '',
+              world: charWorld.value || ''
+            };
+
+            // A -> B
             await ensureContactForOwner(charId, targetChar);
+            await ensurePrivateChatContainer(ownerChar, targetChar);
+
+            // B -> A（你要的双向自动出现）
+            await ensureContactForOwner(targetChar.id, ownerChar);
+            await ensurePrivateChatContainer(targetChar, ownerChar);
+
+            addCharLog(`${charName.value} 主动添加了联系人：${targetChar.name}（已双向建立联系人）`);
+            continue;
+          }
+
+          // 解析角色主动建群
+          const createGroupMatch = line.match(/^【建群[：:](.+?)[\|｜](.+)】$/);
+          if (createGroupMatch) {
+            const newGroupName = createGroupMatch[1].trim();
+            const memberNames = createGroupMatch[2].split(',').map(s => s.trim()).filter(s => s);
 
             const ownerChar = {
               id: charId,
@@ -1586,46 +1610,108 @@ const lines = processedReply.split('\n').map(l => l.trim()).filter(l => l.length
               world: charWorld.value || ''
             };
 
-            await ensurePrivateChatContainer(ownerChar, targetChar);
+            const memberObjsRaw = [];
+            for (const rawName of memberNames) {
+              // 先从当前联系人里按显示名 / 真名 / 别名找
+              const contacts = JSON.parse(JSON.stringify((await dbGet(`cwContacts_${charId}`)) || []));
+              const contactHit = findContactByAnyName(contacts, rawName);
 
-            addCharLog(`${charName.value} 主动添加了联系人：${targetChar.name}`);
-            continue;
-          }
+              let targetChar = null;
+              if (contactHit && contactHit.id != null) {
+                const pool = await getAllCharacterPool();
+                targetChar = pool.find(c => c.id === contactHit.id) || {
+                  id: contactHit.id,
+                  name: contactHit.name,
+                  realName: contactHit.realName,
+                  aliases: contactHit.aliases,
+                  avatar: contactHit.avatar,
+                  persona: contactHit.persona
+                };
+              } else {
+                // 联系人里没有，再走全局角色池解析
+                targetChar = await resolveSocialTarget(charId, rawName);
+              }
 
-          // 解析角色主动建群
-          const createGroupMatch = line.match(/^【建群[：:](.+?)[\|｜](.+)】$/);
-          if (createGroupMatch) {
-            const newGroupName = createGroupMatch[1].trim();
-            const memberNames = createGroupMatch[2].split(',').map(s => s.trim()).filter(s => s);
-            const contacts = JSON.parse(JSON.stringify((await dbGet(`cwContacts_${charId}`)) || []));
-            const memberObjs = memberNames.map(name => {
-              const c = contacts.find(c => c.name === name);
-              return c ? { id: c.id, name: c.name, avatar: c.avatar || '', persona: c.persona || '' } : null;
-            }).filter(Boolean);
+              if (!targetChar || targetChar.id == null) {
+                addCharLog(`${charName.value} 建群时跳过未识别成员：${rawName}`, 'warn');
+                continue;
+              }
+
+              if (targetChar.id === charId) continue;
+
+              // 顺手补齐联系人和私聊容器（双向）
+              await ensureContactForOwner(charId, targetChar);
+              await ensurePrivateChatContainer(ownerChar, targetChar);
+              await ensureContactForOwner(targetChar.id, ownerChar);
+              await ensurePrivateChatContainer(targetChar, ownerChar);
+
+              memberObjsRaw.push({
+                id: targetChar.id,
+                name: targetChar.name,
+                realName: targetChar.realName || extractRealNameFromPersona(targetChar.persona || ''),
+                aliases: Array.isArray(targetChar.aliases) ? targetChar.aliases : extractAliasesFromPersona(targetChar.persona || ''),
+                avatar: targetChar.avatar || '',
+                persona: targetChar.persona || ''
+              });
+            }
+
+            const memberObjs = Array.from(
+              new Map(memberObjsRaw.map(m => [m.id, m])).values()
+            );
+
             if (memberObjs.length) {
+              // 发起者自己也放进群成员
+              const fullMembers = [
+                {
+                  id: charId,
+                  name: charName.value,
+                  realName: extractRealNameFromPersona(charPersona.value || ''),
+                  aliases: extractAliasesFromPersona(charPersona.value || ''),
+                  avatar: charAvatar.value || '',
+                  persona: charPersona.value || ''
+                },
+                ...memberObjs
+              ];
+
+              const dedupMembers = Array.from(
+                new Map(fullMembers.map(m => [m.id, m])).values()
+              );
+
               const localGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${charId}`)) || []));
-              localGroups.push({ id: Date.now(), name: newGroupName, charId, members: memberObjs, messages: [], lastMsg: '', lastTime: Date.now(), isLocal: true });
+              localGroups.push({
+                id: Date.now(),
+                name: newGroupName,
+                charId,
+                members: dedupMembers,
+                messages: [],
+                lastMsg: '',
+                lastTime: Date.now(),
+                isLocal: true
+              });
               await dbSet(`cwLocalGroups_${charId}`, localGroups);
+
               // 同时写入所有其他成员的角色世界
-              for (const memberObj of memberObjs) {
-                const memberChar = contacts.find(c => c.id === memberObj.id);
-                if (!memberChar || memberChar.id === charId) continue;
-                const memberLocalGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${memberChar.id}`)) || []));
+              for (const memberObj of dedupMembers) {
+                if (memberObj.id === charId) continue;
+                const memberLocalGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${memberObj.id}`)) || []));
                 if (!memberLocalGroups.find(r => r.name === newGroupName)) {
                   memberLocalGroups.push({
                     id: Date.now() + Math.random(),
                     name: newGroupName,
-                    charId: memberChar.id,
-                    members: memberObjs,
+                    charId: memberObj.id,
+                    members: dedupMembers,
                     messages: [],
                     lastMsg: '',
                     lastTime: Date.now(),
                     isLocal: true
                   });
-                  await dbSet(`cwLocalGroups_${memberChar.id}`, memberLocalGroups);
+                  await dbSet(`cwLocalGroups_${memberObj.id}`, memberLocalGroups);
                 }
               }
-              addCharLog(`${charName.value} 主动建了群：${newGroupName}，成员：${memberNames.join('、')}`);
+
+              addCharLog(`${charName.value} 主动建了群：${newGroupName}，成员：${dedupMembers.map(m => m.name).join('、')}`);
+            } else {
+              addCharLog(`${charName.value} 建群失败：没有可识别成员`, 'warn');
             }
             continue;
           }

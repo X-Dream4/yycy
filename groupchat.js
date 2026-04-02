@@ -1262,6 +1262,189 @@ const writeCharMemory = async (targetCharId, memItem) => {
   if (existing.length > 100) existing.splice(100);
   await dbSet(key, existing);
 };
+
+const normalizeSocialName = (s) => String(s || '').trim().toLowerCase();
+
+const splitAliasText = (text) => {
+  return String(text || '')
+    .split(/[、，,\/|｜\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+};
+
+const extractRealNameFromPersona = (persona) => {
+  if (!persona) return '';
+  const m = String(persona).match(/(?:真名|本名|姓名|名字|中文名|name|real\s*name)[：:\s]*([^\n，,。；;]+)/i);
+  return m ? m[1].trim() : '';
+};
+
+const extractAliasesFromPersona = (persona) => {
+  if (!persona) return [];
+  const aliases = [];
+
+  const direct = String(persona).match(/(?:别名|昵称|外号|代号|小名|称呼|英文名|aliases?|alias|codename)[：:\s]*([^\n]+)/i);
+  if (direct) aliases.push(...splitAliasText(direct[1]));
+
+  const allQuoted = [...String(persona).matchAll(/(?:又叫|也叫|叫做|被叫做|外号是|昵称是)[：:\s]*[“"「『]?([^”"」』\n，,。；;]+)[”"」』]?/gi)];
+  allQuoted.forEach(m => {
+    if (m[1]) aliases.push(...splitAliasText(m[1]));
+  });
+
+  return Array.from(new Set(aliases.filter(Boolean)));
+};
+
+const extractNameCandidatesFromChar = (charObj) => {
+  const set = new Set();
+  if (!charObj) return [];
+
+  const addName = (v) => {
+    const t = String(v || '').trim();
+    if (t) set.add(t);
+  };
+
+  addName(charObj.name);
+  addName(charObj.realName);
+  addName(extractRealNameFromPersona(charObj.persona || ''));
+
+  const aliases = Array.isArray(charObj.aliases)
+    ? charObj.aliases
+    : extractAliasesFromPersona(charObj.persona || '');
+  aliases.forEach(addName);
+
+  return Array.from(set);
+};
+
+const buildContactFromChar = (charObj) => {
+  const realName = charObj.realName || extractRealNameFromPersona(charObj.persona || '');
+  const aliases = Array.isArray(charObj.aliases) && charObj.aliases.length
+    ? Array.from(new Set(charObj.aliases.filter(Boolean)))
+    : extractAliasesFromPersona(charObj.persona || '');
+
+  return {
+    id: charObj.id,
+    name: charObj.name || '',
+    realName: realName || '',
+    aliases,
+    avatar: charObj.avatar || '',
+    persona: charObj.persona || ''
+  };
+};
+
+const getAllCharacterPool = async () => {
+  const [charList, randomCharList] = await Promise.all([
+    dbGet('charList'),
+    dbGet('randomCharList')
+  ]);
+  const merged = [...(charList || []), ...(randomCharList || [])];
+  const map = new Map();
+  for (const c of merged) {
+    if (!c || c.id == null) continue;
+    if (!map.has(c.id)) map.set(c.id, c);
+    else map.set(c.id, { ...map.get(c.id), ...c });
+  }
+  return Array.from(map.values());
+};
+
+const findCharInPoolByAnyName = (pool, rawName) => {
+  const target = normalizeSocialName(rawName);
+  if (!target) return null;
+  return pool.find(c => extractNameCandidatesFromChar(c).some(n => normalizeSocialName(n) === target)) || null;
+};
+
+const ensureContactForOwner = async (ownerId, targetChar) => {
+  const key = `cwContacts_${ownerId}`;
+  const contacts = JSON.parse(JSON.stringify((await dbGet(key)) || []));
+  let contact = contacts.find(c => c.id === targetChar.id);
+
+  if (!contact) {
+    contact = buildContactFromChar(targetChar);
+    contacts.push(contact);
+    await dbSet(key, contacts);
+  } else {
+    const merged = {
+      ...contact,
+      ...buildContactFromChar(targetChar),
+      aliases: Array.from(new Set([
+        ...(Array.isArray(contact.aliases) ? contact.aliases : []),
+        ...extractAliasesFromPersona(contact.persona || ''),
+        ...extractAliasesFromPersona(targetChar.persona || ''),
+        ...(Array.isArray(targetChar.aliases) ? targetChar.aliases : [])
+      ].filter(Boolean)))
+    };
+    const idx = contacts.findIndex(c => c.id === targetChar.id);
+    contacts[idx] = merged;
+    contact = merged;
+    await dbSet(key, contacts);
+  }
+
+  return contact;
+};
+
+const ensurePrivateChatContainer = async (ownerChar, otherChar) => {
+  const key = `cwPrivateChats_${ownerChar.id}`;
+  const pcs = JSON.parse(JSON.stringify((await dbGet(key)) || []));
+  let pc = pcs.find(p => p.otherId === otherChar.id);
+
+  if (!pc) {
+    pc = {
+      id: Date.now() + Math.floor(Math.random() * 10000),
+      charId: ownerChar.id,
+      charName: ownerChar.name,
+      otherId: otherChar.id,
+      otherName: otherChar.name,
+      otherAvatar: otherChar.avatar || '',
+      relation: '',
+      messages: [],
+      lastMsg: '',
+      lastTime: Date.now()
+    };
+    pcs.push(pc);
+    await dbSet(key, pcs);
+    return pc;
+  }
+
+  pc.charName = ownerChar.name || pc.charName || '';
+  pc.otherName = otherChar.name || pc.otherName || '';
+  pc.otherAvatar = otherChar.avatar || pc.otherAvatar || '';
+
+  const idx = pcs.findIndex(p => p.otherId === otherChar.id);
+  pcs[idx] = pc;
+  await dbSet(key, pcs);
+  return pc;
+};
+
+const resolveGroupSocialTarget = async (rawName) => {
+  const pool = await getAllCharacterPool();
+  return findCharInPoolByAnyName(pool, rawName);
+};
+
+const ensureMutualContactsForGroupMembers = async (ownerChar, targetChar) => {
+  await ensureContactForOwner(ownerChar.id, targetChar);
+  await ensurePrivateChatContainer(ownerChar, targetChar);
+
+  await ensureContactForOwner(targetChar.id, ownerChar);
+  await ensurePrivateChatContainer(targetChar, ownerChar);
+};
+
+const buildGroupMemberChar = async (memberName) => {
+  const pool = await getAllCharacterPool();
+  const hit = pool.find(c => normalizeSocialName(c.name) === normalizeSocialName(memberName))
+    || pool.find(c => extractNameCandidatesFromChar(c).some(n => normalizeSocialName(n) === normalizeSocialName(memberName)));
+
+  if (hit) return hit;
+
+  const localMember = (members.value || []).find(m => normalizeSocialName(m.name) === normalizeSocialName(memberName));
+  if (!localMember || localMember.id == null) return null;
+
+  return {
+    id: localMember.id,
+    name: localMember.name || '',
+    avatar: localMember.avatar || '',
+    persona: localMember.persona || '',
+    world: localMember.world || ''
+  };
+};
+
 const buildGroupLifePrompt = async () => {
   if (!window.CharLife) return '';
   try {
@@ -1654,7 +1837,7 @@ ${existingSubGroupMsgsText ? '【小群之前的聊天记录】\n' + existingSub
       }
 
       const socialPrompt = socialCircleOn.value
-        ? `【社交圈】群里的成员各自有自己的朋友和小群，他们会主动联系各自的朋友。如果某个成员想私下联系某个朋友，请在该成员的发言中加入：【私信:目标名字|想说的第一句话】。如果某个成员想在某个小群里发言，请在该成员的发言中加入：【群发:群名字|想说的第一句话】。如果某个成员想建一个新的小群，请在该成员的发言中加入：【建群:群名字|成员1,成员2】。${memberSocialDesc ? '\n' + memberSocialDesc : ''}【重要】成员们应该积极主动地和各自的朋友互动，每次群聊只要有合适时机就触发一次社交行为，不要刻意回避。`
+        ? `【社交圈】群里的成员各自有自己的朋友和小群，他们会主动联系各自的朋友。如果某个成员想私下联系某个朋友，请在该成员的发言中加入：【私信:目标名字|想说的第一句话】。如果某个成员想在某个小群里发言，请在该成员的发言中加入：【群发:群名字|想说的第一句话】。如果某个成员想建一个新的小群，请在该成员的发言中加入：【建群:群名字|成员1,成员2】。如果某个成员想把某个人加为联系人，请在该成员的发言中加入：【添加联系人:角色名】。${memberSocialDesc ? '\n' + memberSocialDesc : ''}【重要】成员们应该积极主动地和各自的朋友互动，每次群聊只要有合适时机就触发一次社交行为，不要刻意回避。`
         : '';
 
       // 世界书处理
@@ -1795,6 +1978,7 @@ const lines = processedReply.split('&').map(l => l.trim()).filter(l => l.length 
               triggerSocialAction(`【私信:${socialPrivateMatch[1]}|${socialPrivateMatch[2]}】`, senderName);
               continue;
             }
+
             const socialGroupMatch = content.match(/^【群发[：:](.+?)(?:[\|｜](.+))?】$/);
             if (socialGroupMatch) {
               const gName = socialGroupMatch[1].trim();
@@ -1802,54 +1986,128 @@ const lines = processedReply.split('&').map(l => l.trim()).filter(l => l.length 
               triggerSocialAction(`【群发:${gName}${gMsg ? '|' + gMsg : ''}】`, senderName);
               continue;
             }
+
+            const addContactMatch = content.match(/^【添加联系人[：:](.+)】$/);
+            if (addContactMatch) {
+              const targetRawName = addContactMatch[1].trim();
+
+              const ownerChar = await buildGroupMemberChar(senderName);
+              const targetChar = await resolveGroupSocialTarget(targetRawName);
+
+              if (!ownerChar || ownerChar.id == null) {
+                addRoomLog(`${senderName} 添加联系人失败：找不到发起者角色本体`, 'warn');
+                continue;
+              }
+
+              if (!targetChar || targetChar.id == null) {
+                addRoomLog(`${senderName} 添加联系人失败：找不到目标角色 ${targetRawName}`, 'warn');
+                continue;
+              }
+
+              if (ownerChar.id === targetChar.id) {
+                addRoomLog(`${senderName} 不能把自己添加为联系人`, 'warn');
+                continue;
+              }
+
+              await ensureMutualContactsForGroupMembers(ownerChar, targetChar);
+              addRoomLog(`${senderName} 主动添加了联系人：${targetChar.name}（已双向建立联系人）`);
+              continue;
+            }
+
             // 解析角色主动建群（群聊里触发）
             const createGroupMatch = content.match(/^【建群[：:](.+?)[\|｜](.+)】$/);
             if (createGroupMatch) {
               const newGroupName = createGroupMatch[1].trim();
               const newMemberNames = createGroupMatch[2].split(',').map(s => s.trim()).filter(s => s);
-              const memberObjsForGroup = newMemberNames.map(name => {
-                const m = members.value.find(m => m.name === name);
-                return m ? { id: m.id, name: m.name, persona: m.persona || '' } : null;
-              }).filter(Boolean);
-              if (memberObjsForGroup.length) {
-                const allCharListForGroup = JSON.parse(JSON.stringify((await dbGet('charList')) || []));
-                const triggerCharForGroup = allCharListForGroup.find(c => c.name === senderName);
-                if (triggerCharForGroup) {
-                  const localGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${triggerCharForGroup.id}`)) || []));
-                  localGroups.push({
-                    id: Date.now(),
+
+              const triggerCharForGroup = await buildGroupMemberChar(senderName);
+              if (!triggerCharForGroup || triggerCharForGroup.id == null) {
+                addRoomLog(`${senderName} 建群失败：找不到发起者角色本体`, 'warn');
+                continue;
+              }
+
+              const memberObjsForGroupRaw = [];
+              for (const rawName of newMemberNames) {
+                // 先从当前群成员里按显示名 / 真名 / 别名找
+                let hitMember = (members.value || []).find(m => {
+                  const candidates = extractNameCandidatesFromChar(m);
+                  return candidates.some(n => normalizeSocialName(n) === normalizeSocialName(rawName));
+                });
+
+                // 当前群里没找到，再去全局角色池找
+                let targetChar = hitMember || await resolveGroupSocialTarget(rawName);
+
+                if (!targetChar || targetChar.id == null) {
+                  addRoomLog(`${senderName} 建群时跳过未识别成员：${rawName}`, 'warn');
+                  continue;
+                }
+
+                memberObjsForGroupRaw.push({
+                  id: targetChar.id,
+                  name: targetChar.name,
+                  realName: targetChar.realName || extractRealNameFromPersona(targetChar.persona || ''),
+                  aliases: Array.isArray(targetChar.aliases) ? targetChar.aliases : extractAliasesFromPersona(targetChar.persona || ''),
+                  avatar: targetChar.avatar || '',
+                  persona: targetChar.persona || ''
+                });
+              }
+
+              const memberObjsForGroup = Array.from(
+                new Map(memberObjsForGroupRaw.map(m => [m.id, m])).values()
+              );
+
+              if (!memberObjsForGroup.length) {
+                addRoomLog(`${senderName} 建群失败：没有可用成员`, 'warn');
+                continue;
+              }
+
+              // 发起者自己也应该在群成员里
+              const hasTriggerSelf = memberObjsForGroup.some(m => m.id === triggerCharForGroup.id);
+              if (!hasTriggerSelf) {
+                memberObjsForGroup.unshift({
+                  id: triggerCharForGroup.id,
+                  name: triggerCharForGroup.name,
+                  realName: triggerCharForGroup.realName || extractRealNameFromPersona(triggerCharForGroup.persona || ''),
+                  aliases: Array.isArray(triggerCharForGroup.aliases) ? triggerCharForGroup.aliases : extractAliasesFromPersona(triggerCharForGroup.persona || ''),
+                  avatar: triggerCharForGroup.avatar || '',
+                  persona: triggerCharForGroup.persona || ''
+                });
+              }
+
+              const localGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${triggerCharForGroup.id}`)) || []));
+              localGroups.push({
+                id: Date.now(),
+                name: newGroupName,
+                charId: triggerCharForGroup.id,
+                members: memberObjsForGroup,
+                messages: [],
+                lastMsg: '',
+                lastTime: Date.now(),
+                isLocal: true
+              });
+              await dbSet(`cwLocalGroups_${triggerCharForGroup.id}`, localGroups);
+
+              // 同时写入所有其他成员的角色世界
+              for (const memberObj of memberObjsForGroup) {
+                if (memberObj.id === triggerCharForGroup.id) continue;
+
+                const memberLocalGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${memberObj.id}`)) || []));
+                if (!memberLocalGroups.find(r => r.name === newGroupName)) {
+                  memberLocalGroups.push({
+                    id: Date.now() + Math.random(),
                     name: newGroupName,
-                    charId: triggerCharForGroup.id,
+                    charId: memberObj.id,
                     members: memberObjsForGroup,
                     messages: [],
                     lastMsg: '',
                     lastTime: Date.now(),
                     isLocal: true
                   });
-                  await dbSet(`cwLocalGroups_${triggerCharForGroup.id}`, localGroups);
-                  // 同时写入所有其他成员的角色世界
-                  for (const memberObj of memberObjsForGroup) {
-                    if (memberObj.id === triggerCharForGroup.id) continue;
-                    const memberChar = allCharListForGroup.find(c => c.name === memberObj.name);
-                    if (!memberChar) continue;
-                    const memberLocalGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${memberChar.id}`)) || []));
-                    if (!memberLocalGroups.find(r => r.name === newGroupName)) {
-                      memberLocalGroups.push({
-                        id: Date.now() + Math.random(),
-                        name: newGroupName,
-                        charId: memberChar.id,
-                        members: memberObjsForGroup,
-                        messages: [],
-                        lastMsg: '',
-                        lastTime: Date.now(),
-                        isLocal: true
-                      });
-                      await dbSet(`cwLocalGroups_${memberChar.id}`, memberLocalGroups);
-                    }
-                  }
-                  addRoomLog(`${senderName} 主动建了群：${newGroupName}，成员：${newMemberNames.join('、')}`);
+                  await dbSet(`cwLocalGroups_${memberObj.id}`, memberLocalGroups);
                 }
               }
+
+              addRoomLog(`${senderName} 主动建了群：${newGroupName}，成员：${memberObjsForGroup.map(m => m.name).join('、')}`);
               continue;
             }
           }
