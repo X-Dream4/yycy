@@ -987,7 +987,30 @@ function getLocalKeywords() {
     .filter(m => !m.recalled && !m.loading)
     .slice(-14)
     .map(m => m.content)
+    .join(' ');function getLocalKeywords() {
+  const recent = allMessages.value
+    .filter(m => !m.recalled && !m.loading)
+    .slice(-14)
+    .map(m => m.content)
     .join(' ');
+
+  const words = recent
+    .replace(/[【】\[\]（）()“”"'‘’\n\r\t，。！？,.!?、；;:：~～\-]/g, ' ')
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w =>
+      w &&
+      w.length >= 2 &&
+      w.length <= 8 &&
+      !BACKFILL_STOP_WORDS.includes(w) &&
+      !/^\d+$/.test(w) &&
+      !/^\d{1,2}:\d{2}$/.test(w) &&
+      !/^\d{4,}$/.test(w)
+    );
+
+  return Array.from(new Set(words)).slice(0, 8);
+}
+
   const words = recent
     .replace(/[【】\[\]（）()“”"'‘’\n\r\t，。！？,.!?、；;:：~～\-]/g, ' ')
     .split(/\s+/)
@@ -1140,32 +1163,45 @@ function applyRoleFlavor(text, corpus) {
 
   if (out.length <= 4) out = expandShortTag(out);
 
-  if (!/(我|刚|刚刚|现在|今天|这会儿|刚才)/.test(out)) {
-    const autoPrefix = pick(prefixes) || pick(['我刚刚', '我现在', '刚才', '这会儿']);
+  if (!/^(我|刚|刚刚|现在|今天|这会儿|刚才|下午|上午|晚上|中午|清晨|深夜)/.test(out)) {
+    const autoPrefix = pick(prefixes) || pick(['我', '我现在', '我刚刚', '刚才', '今天']);
     if (autoPrefix) out = `${autoPrefix}${out.replace(/^我/, '')}`;
   }
 
-  if (s.cute && Math.random() < 0.35 && !/[啊呀啦呢嘛]$/.test(out)) out += pick(['呀', '啦', '呢']);
-  if (s.proud && Math.random() < 0.25 && !/[。！？!?]$/.test(out)) out += pick(['哼', '呢']);
-  if (s.lively && Math.random() < 0.25 && !/[。！？!?]$/.test(out)) out += pick(['哈哈', '欸']);
-  if (suffixes.length && Math.random() < 0.25 && !out.endsWith(pick(suffixes))) {
+  if (s.cute && Math.random() < 0.2 && !/[啊呀啦呢嘛]$/.test(out) && !/了$/.test(out)) out += pick(['呀', '呢']);
+  if (s.proud && Math.random() < 0.15 && !/[啊呀啦呢嘛哼]$/.test(out) && !/了$/.test(out)) out += '哼';
+  if (s.lively && Math.random() < 0.15 && !/哈哈$/.test(out) && out.length <= 12) out += '哈哈';
+
+  if (suffixes.length && Math.random() < 0.15 && !/了$/.test(out)) {
     const sf = pick(suffixes);
-    if (sf && out.length <= 18 && !out.endsWith(sf)) out += sf;
+    if (sf && out.length <= 16 && !out.endsWith(sf) && !/[啊呀啦呢嘛]$/.test(out)) out += sf;
   }
 
-  out = out.replace(/我现在我/g, '我现在')
-           .replace(/我刚刚我/g, '我刚刚')
-           .replace(/刚才我刚才/g, '刚才')
-           .trim();
+  out = out
+    .replace(/^我刚下午/, '我下午')
+    .replace(/^我刚上午/, '我上午')
+    .replace(/^我刚晚上/, '我晚上')
+    .replace(/^我刚中午/, '我中午')
+    .replace(/^我刚清晨/, '我清晨')
+    .replace(/^我刚深夜/, '我深夜')
+    .replace(/一点了啦$/, '一点啦')
+    .replace(/一点了呀$/, '一点呀')
+    .replace(/我现在我/g, '我现在')
+    .replace(/我刚刚我/g, '我刚刚')
+    .replace(/刚才我刚才/g, '刚才')
+    .trim();
 
   return out;
 }
+
 function isNaturalBackfillLine(text) {
   const raw = String(text || '').trim();
   const norm = normalizeBackfillText(raw);
   if (!raw || norm.length < 6) return false;
   if (BACKFILL_BAD_PHRASES.includes(norm)) return false;
   if (!/(我|刚|刚刚|现在|今天|这会儿|刚才|有点|真的|还|才|又)/.test(raw)) return false;
+  if (/\d/.test(raw)) return false;
+  if (/(想到|还在想|全是)$/.test(raw)) return false;
   return true;
 }
 function calcTextSimilarity(a, b) {
@@ -1184,18 +1220,11 @@ function isTooSimilarText(text, recentTexts) {
   return recentTexts.some(t => calcTextSimilarity(text, t) >= 0.72);
 }
 function styleShortBubble(text) {
-  const cuts = text.split(/[,，.。!！?？]/).map(s => s.trim()).filter(Boolean);
-  if (!cuts.length) return [text];
-  const chunks = [];
-  for (const c of cuts) {
-    if (c.length <= 12) chunks.push(c);
-    else {
-      chunks.push(c.slice(0, 12));
-      if (c.length > 12) chunks.push(c.slice(12, Math.min(24, c.length)));
-    }
-    if (chunks.length >= 2) break;
-  }
-  return chunks.length ? chunks : [text];
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const cuts = clean.split(/[。！？!?~～]+/).map(s => s.trim()).filter(Boolean);
+  if (cuts.length > 1) return cuts.slice(0, 2);
+  return [clean];
 }
 async function getMomentsMode() {
   return (await dbGet(`momentsMode_${charId}`)) || MOMENTS_MODE_DEFAULT;

@@ -16,46 +16,6 @@ createApp({
       { key: 'bilibili', label: 'B站' },
       { key: 'hackernews', label: 'HN' },
     ];
-    // ===== 语义检索系统 (Vector Search) =====
-    const vectorSearchOn = ref(false); // 默认关闭，让用户选
-    const vectorReady = ref(false);
-    let vectorWorker = null;
-    let vectorWaitQueue = new Map();
-
-    const initVectorSystem = () => {
-        if (vectorWorker) return;
-        vectorWorker = new Worker('vector-worker.js', { type: 'module' });
-        vectorWorker.onmessage = (e) => {
-            const { type, msg, percent, results, searchId, vector, id } = e.data;
-            if (type === 'status') addCharLog(`[引擎] ${msg}`);
-            if (type === 'downloading') addCharLog(`[引擎] 正在下载模型: ${percent}%`);
-            if (type === 'ready') vectorReady.value = true;
-            if (type === 'searchResult' || type === 'vectorResult') {
-                const resolve = vectorWaitQueue.get(searchId || id);
-                if (resolve) {
-                    resolve(results || vector);
-                    vectorWaitQueue.delete(searchId || id);
-                }
-            }
-        };
-        vectorWorker.postMessage({ type: 'init' });
-    };
-
-    // 获取单条文本的向量（带本地缓存）
-    const getVector = async (text, id) => {
-        const cacheKey = `vec_${id}_${text.length}`;
-        const cached = await dbGet(cacheKey);
-        if (cached) return cached;
-
-        const reqId = 'req_' + Date.now() + Math.random();
-        vectorWorker.postMessage({ type: 'getVector', text, id: reqId });
-        return new Promise(resolve => {
-            vectorWaitQueue.set(reqId, async (vec) => {
-                await dbSet(cacheKey, vec); // 存入 IndexedDB
-                resolve(vec);
-            });
-        });
-    };
 
     // ===== 知晓小说 =====
     const novelAwareOn = ref(false);
@@ -196,10 +156,6 @@ createApp({
     const mySettingsShow = ref(false);
     const chatSettingsShow = ref(false);
     const dimensionShow = ref(false);
-    const lifeStatusShow = ref(false);
-    const lifeStatusLoading = ref(false);
-    const lifeStatusData = ref(null);
-
     const peekSoulShow = ref(false);
     const dimensionMirrorShow = ref(false);
     const myWhisperShow = ref(false);
@@ -300,7 +256,6 @@ createApp({
     const selectedWorldBooks = ref([]);
     const bubbleMaxWidth = ref(72);
 // ===== 角色社交圈 =====
-const memorySearchOn = ref(true);
 const socialCircleOn = ref(false);
 const socialInjectCount = ref(5);
 const socialInjectOn = ref(true);
@@ -732,7 +687,6 @@ const applySummaryPromptPreset = (p) => {
       toolbarOpen.value = false;
       if (inputRef.value) inputRef.value.style.height = 'auto';
       await saveMessages();
-      scheduleMemorySearch();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
 
@@ -743,653 +697,9 @@ const applySummaryPromptPreset = (p) => {
       allMessages.value.push(msg);
       whisperText.value = '';
       await saveMessages();
-      scheduleMemorySearch();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
-// ===== 本地记忆检索系统 =====
-let memorySearchCache = null;
-let memorySearchTimer = null;
-
-const localMemorySearch = (query, memories, topN = 10) => {
-  if (!query || !memories || !memories.length) return [];
-  const queryChars = new Set(query.replace(/[\s\n]/g, '').split(''));
-  if (queryChars.size === 0) return memories.slice(0, topN);
-  return memories
-    .filter(m => !m.hidden)
-    .map(m => {
-      const text = (m.summary || m.content || '').replace(/[\s\n]/g, '');
-      let overlap = 0;
-      for (const ch of queryChars) {
-        if (text.includes(ch)) overlap++;
-      }
-      const relevance = overlap / queryChars.size;
-      const finalScore = relevance * 0.6 + (parseFloat(m.score) || 0.5) * 0.4;
-      return { ...m, finalScore };
-    })
-    .sort((a, b) => b.finalScore - a.finalScore)
-    .slice(0, topN);
-};
-
-const runMemorySearch = async () => {
-  const recentQuery = allMessages.value
-    .filter(m => !m.recalled && !m.loading)
-    .slice(-5)
-    .map(m => m.content)
-    .join(' ');
-
-  const cache = {};
-
-  // 检索 charMemory
-  const memGS = JSON.parse(JSON.stringify((await dbGet('memoryGlobalSettings')) || {}));
-  const memInjectOn = memGS.injectOn !== false;
-  const memInjectCount = parseInt(memGS.myChatsCount) || 20;
-  if (memInjectOn) {
-    const charMemData = JSON.parse(JSON.stringify((await dbGet(`charMemory_${charId}`)) || []));
-    const charMemGroups = JSON.parse(JSON.stringify((await dbGet(`charMemoryGroups_${charId}`)) || []));
-    const validMems = charMemData.filter(m => {
-      if (m.hidden) return false;
-      let injectTo;
-      if (m.injectOverride) { injectTo = m.injectOverride; }
-      else {
-        const grp = charMemGroups.find(g => g.groupKey === m.groupKey);
-        injectTo = grp ? grp.injectTo : { myChats: [charId], groups: [] };
-      }
-      return injectTo && injectTo.myChats && injectTo.myChats.some(id => String(id) === String(charId));
-    });
-    cache.charMems = memorySearchOn.value
-      ? localMemorySearch(recentQuery, validMems, memInjectCount)
-      : validMems.slice().sort((a, b) => b.score - a.score).slice(0, memInjectCount);
-  } else {
-    cache.charMems = [];
-  }
-
-  // 检索 summaries
-  const summaryMems = summaries.value.map(s => ({ ...s, summary: s.content, score: 0.5 }));
-    cache.beforeSummaries = memorySearchOn.value
-      ? localMemorySearch(recentQuery, summaryMems.filter(s => s.pos === 'before_history'), 5)
-      : summaryMems.filter(s => s.pos === 'before_history').slice(0, 5);
-    cache.afterSummaries = memorySearchOn.value
-      ? localMemorySearch(recentQuery, summaryMems.filter(s => s.pos === 'after_system'), 5)
-      : summaryMems.filter(s => s.pos === 'after_system').slice(0, 5);
-
-  // 检索核心记忆
-  const coreMemData = JSON.parse(JSON.stringify((await dbGet(`charCoreMemory_${charId}`)) || []));
-  cache.coreMems = coreMemData;
-
-  memorySearchCache = cache;
-  addCharLog(`记忆预检索完成：charMemory ${cache.charMems.length}条，summaries ${cache.beforeSummaries.length + cache.afterSummaries.length}条，核心记忆 ${cache.coreMems.length}条`);
-};
-
-const scheduleMemorySearch = () => {
-  clearTimeout(memorySearchTimer);
-  memorySearchTimer = setTimeout(() => { runMemorySearch(); }, 300);
-};
-
-/* ===== 离线时间缺口回填：配置与工具 ===== */
-const BACKFILL_MAX_TOTAL = 10;
-const COOLDOWN_MS = 2 * 60 * 1000;
-const MOMENTS_MODE_DEFAULT = 'normal';
-const MOMENTS_PROB = { rare: 0.2, normal: 0.35, often: 0.6 };
-const BACKFILL_BAD_PHRASES = [
-  '在路上', '继续忙', '想聊天', '不困', '犯困', '回家路上',
-  '看东西', '刷动态', '摸鱼', '喝水', '起床？', '打盹', '下班'
-];
-const BACKFILL_STOP_WORDS = [
-  '这个','那个','就是','然后','真的','有点','一下','已经','还是','因为','所以',
-  '我们','你们','他们','自己','不是','什么','怎么','今天','刚刚','现在','感觉',
-  '消息','聊天','看到','一个','一下子','时候','东西','这样','那样','可以'
-];
-
-const TIME_BUCKETS = [
-  { key: 'dawn',   start: 5,  end: 8,  weight: 0.05 },
-  { key: 'am',     start: 8,  end: 11, weight: 0.28 },
-  { key: 'noon',   start: 11, end: 14, weight: 0.15 },
-  { key: 'pm',     start: 14, end: 18, weight: 0.25 },
-  { key: 'eve',    start: 18, end: 23, weight: 0.25 },
-  { key: 'night',  start: 23, end: 29, weight: 0.02 },
-];
-
-function decideBackfillCount(gapMs) {
-  const m = gapMs / (60 * 1000);
-  if (m < 30) return randInt(1, 2);
-  if (m < 180) return randInt(3, 4);
-  if (m < 720) return randInt(4, 6);
-  return randInt(5, 10);
-}
-function randInt(a, b) { return Math.floor(a + Math.random() * (b - a + 1)); }
-function pick(arr) { return arr[Math.floor(Math.random() * arr.length)] || ''; }
-function hourOf(ts) { return new Date(ts).getHours(); }
-function bucketOf(h) {
-  if (h >= 5 && h < 8) return 'dawn';
-  if (h >= 8 && h < 11) return 'am';
-  if (h >= 11 && h < 14) return 'noon';
-  if (h >= 14 && h < 18) return 'pm';
-  if (h >= 18 && h < 23) return 'eve';
-  return 'night';
-}
-function getCoveredBuckets(startTs, endTs) {
-  const covered = new Set();
-  let t = startTs;
-  while (t <= endTs) {
-    covered.add(bucketOf(hourOf(t)));
-    t += 60 * 60 * 1000;
-  }
-  return Array.from(covered);
-}
-function normalizeWeights(buckets) {
-  const map = {};
-  let sum = 0;
-  for (const b of TIME_BUCKETS) {
-    if (buckets.includes(b.key)) { map[b.key] = b.weight; sum += b.weight; }
-  }
-  Object.keys(map).forEach(k => map[k] = map[k] / (sum || 1));
-  return map;
-}
-function formatGapLabel(ms) {
-  const totalMin = Math.max(1, Math.floor(ms / 60000));
-  if (totalMin < 60) return `${totalMin}分钟`;
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h < 24) return m ? `${h}小时${m}分钟` : `${h}小时`;
-  const d = Math.floor(h / 24);
-  const rh = h % 24;
-  return rh ? `${d}天${rh}小时` : `${d}天`;
-}
-function bucketLabel(key) {
-  return ({ dawn: '清晨', am: '上午', noon: '中午', pm: '下午', eve: '晚上', night: '深夜' })[key] || key;
-}
-function normalizeBackfillText(text) {
-  return String(text || '')
-    .replace(/【.*?】|\[.*?\]/g, ' ')
-    .replace(/\s+/g, '')
-    .replace(/[，。！？,.!?~～…、；;：“”"'（）()]/g, '');
-}
-function splitNaturalUnits(text) {
-  const clean = String(text || '')
-    .replace(/【.*?】|\[.*?\]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!clean) return [];
-  return clean
-    .split(/[。！？!?~～\n]/)
-    .flatMap(s => s.split(/[，,；;]/))
-    .map(s => s.trim())
-    .filter(s => s.length >= 4 && s.length <= 26);
-}
-function getLocalKeywords() {
-  const recent = allMessages.value
-    .filter(m => !m.recalled && !m.loading)
-    .slice(-14)
-    .map(m => m.content)
-    .join(' ');
-  const words = recent
-    .replace(/[【】\[\]（）()“”"'‘’\n\r\t，。！？,.!?、；;:：~～\-]/g, ' ')
-    .split(/\s+/)
-    .map(w => w.trim())
-    .filter(w => w && w.length >= 2 && w.length <= 8 && !BACKFILL_STOP_WORDS.includes(w));
-  return Array.from(new Set(words)).slice(0, 8);
-}
-function extractPersonaStyle(persona) {
-  const p = String(persona || '');
-  return {
-    cute: /可爱|软|撒娇|黏人|奶|温柔|甜|乖|元气/.test(p),
-    cold: /冷淡|冷静|克制|寡言|高冷|疏离|理性/.test(p),
-    proud: /傲娇|嘴硬|别扭|毒舌|强势/.test(p),
-    lively: /活泼|开朗|外向|话痨|沙雕|乐子人/.test(p),
-    emo: /敏感|低落|悲观|阴郁|脆弱/.test(p)
-  };
-}
-function buildCharOfflineCorpus() {
-  const charMsgs = allMessages.value
-    .filter(m => m.role === 'char' && !m.recalled && !m.loading && !m.simulated && m.type === 'normal')
-    .slice(-80);
-
-  const fragments = [];
-  const suffixStats = {};
-  const prefixStats = {};
-
-  for (const m of charMsgs) {
-    const parts = splitNaturalUnits(m.content);
-    parts.forEach(t => fragments.push(t));
-
-    const tail = (String(m.content).match(/(啊|呀|呢|啦|嘛|欸|诶|哼|哦|哈|哈哈|唔|呜|喔)$/) || [])[1];
-    if (tail) suffixStats[tail] = (suffixStats[tail] || 0) + 1;
-
-    const head = (String(m.content).match(/^(我刚|我现在|我又|刚刚|刚才|现在|今天|这会儿|我还)/) || [])[1];
-    if (head) prefixStats[head] = (prefixStats[head] || 0) + 1;
-  }
-
-  const uniqFragments = Array.from(new Set(fragments))
-    .filter(t => t.length >= 5 && t.length <= 24)
-    .slice(-40);
-
-  const suffixes = Object.entries(suffixStats).sort((a, b) => b[1] - a[1]).map(i => i[0]).slice(0, 6);
-  const prefixes = Object.entries(prefixStats).sort((a, b) => b[1] - a[1]).map(i => i[0]).slice(0, 6);
-
-  return {
-    fragments: uniqFragments,
-    suffixes,
-    prefixes,
-    style: extractPersonaStyle(charPersona.value || '')
-  };
-}
-function buildBucketThemes(bucketKey, topics, corpus, lifeCtx = null) {
-  const topic = pick(topics) || '';
-  const topicTail = topic ? `，还在想${topic}` : '';
-  const s = corpus.style || {};
-  const themes = {
-    dawn: ['我刚醒了一下','我今天起得有点早','这会儿人还是懵的','我刚去洗漱了'],
-    am: ['我刚到这边','我上午有点忙','刚刚又开始忙了','我现在还没完全清醒'],
-    noon: ['我刚吃完东西','我现在真的有点困','中午随便对付了几口','我只想趴一会儿'],
-    pm: ['我下午还有一堆事','刚刚又被叫去忙了','我现在脑子有点木','下午真的有点漫长'],
-    eve: ['我刚刚才闲下来','晚上终于稍微轻松一点了','我现在才有空看消息','刚刚一直在折腾'],
-    night: ['我现在还没睡','我怎么又拖到现在了','这会儿反而有点清醒','我刚刚一直发呆']
-  };
-  const pool = (themes[bucketKey] || themes.pm).slice();
-
-  if (topic) {
-    pool.push(`我刚刚还想到${topic}`);
-    pool.push(`刚才又碰到${topic}这事了`);
-    pool.push(`我现在还惦记着${topic}`);
-  }
-  if (s.cute) {
-    pool.push(`我刚刚才缓过来一点${topicTail}`);
-    pool.push('我这会儿还有点蔫蔫的');
-  }
-  if (s.cold) {
-    pool.push('刚忙完一阵');
-    pool.push('现在才腾出空');
-  }
-  if (s.proud) {
-    pool.push('刚才忙得要命');
-    pool.push('我现在可算能歇一下了');
-  }
-  if (s.lively) {
-    pool.push('我刚刚又被折腾了一通');
-    pool.push('我下午真是来回乱跑');
-  }
-  if (s.emo) {
-    pool.push('我今天状态有点一般');
-    pool.push('这会儿情绪还是有点闷');
-  }
-  const lifeStateLines = buildLifeStateLines(lifeCtx);
-  const lifeEventLines = buildLifeEventLines(lifeCtx);
-
-  lifeStateLines.forEach(line => pool.push(line));
-  lifeEventLines.forEach(line => pool.push(line));
-
-  return normalizeTopicList(pool);
-}
-function expandShortTag(text) {
-  const map = {
-    '继续忙': '我还得继续忙一会儿',
-    '不困': '我现在还不困',
-    '在路上': '我现在还在路上',
-    '想聊天': '我现在还挺想和你说话的',
-    '犯困': '我现在真的有点犯困',
-    '回家路上': '我刚刚还在回来的路上',
-    '看东西': '我刚刚一直在看东西',
-    '刷动态': '我刚刚随手刷了会儿动态',
-    '摸鱼': '我刚刚偷空摸了会儿鱼',
-    '下班': '我这会儿才算下班了',
-    '吃了吗': '我刚刚还在想你吃饭了没有'
-  };
-  return map[text] || text;
-}
-function applyRoleFlavor(text, corpus) {
-  let out = String(text || '').trim();
-  const s = corpus.style || {};
-  const prefixes = corpus.prefixes || [];
-  const suffixes = corpus.suffixes || [];
-
-  if (out.length <= 4) out = expandShortTag(out);
-
-  if (!/(我|刚|刚刚|现在|今天|这会儿|刚才)/.test(out)) {
-    const autoPrefix = pick(prefixes) || pick(['我刚刚', '我现在', '刚才', '这会儿']);
-    if (autoPrefix) out = `${autoPrefix}${out.replace(/^我/, '')}`;
-  }
-
-  if (s.cute && Math.random() < 0.35 && !/[啊呀啦呢嘛]$/.test(out)) out += pick(['呀', '啦', '呢']);
-  if (s.proud && Math.random() < 0.25 && !/[。！？!?]$/.test(out)) out += pick(['哼', '呢']);
-  if (s.lively && Math.random() < 0.25 && !/[。！？!?]$/.test(out)) out += pick(['哈哈', '欸']);
-  if (suffixes.length && Math.random() < 0.25) {
-    const sf = pick(suffixes);
-    if (sf && out.length <= 18 && !out.endsWith(sf)) out += sf;
-  }
-
-  out = out.replace(/我现在我/g, '我现在')
-           .replace(/我刚刚我/g, '我刚刚')
-           .replace(/刚才我刚才/g, '刚才')
-           .trim();
-  return out;
-}
-function isNaturalBackfillLine(text) {
-  const raw = String(text || '').trim();
-  const norm = normalizeBackfillText(raw);
-  if (!raw || norm.length < 6) return false;
-  if (BACKFILL_BAD_PHRASES.includes(norm)) return false;
-  if (!/(我|刚|刚刚|现在|今天|这会儿|刚才|有点|真的|还|才|又)/.test(raw)) return false;
-  return true;
-}
-function calcTextSimilarity(a, b) {
-  const x = normalizeBackfillText(a);
-  const y = normalizeBackfillText(b);
-  if (!x || !y) return 0;
-  if (x === y) return 1;
-  if (x.includes(y) || y.includes(x)) return 0.92;
-  const xs = new Set(x.split(''));
-  const ys = new Set(y.split(''));
-  let same = 0;
-  xs.forEach(ch => { if (ys.has(ch)) same++; });
-  return same / Math.max(xs.size, ys.size, 1);
-}
-function isTooSimilarText(text, recentTexts) {
-  return recentTexts.some(t => calcTextSimilarity(text, t) >= 0.72);
-}
-function styleShortBubble(text) {
-  const cuts = text.split(/[,，.。!！?？]/).map(s => s.trim()).filter(Boolean);
-  if (!cuts.length) return [text];
-  const chunks = [];
-  for (const c of cuts) {
-    if (c.length <= 12) chunks.push(c);
-    else {
-      chunks.push(c.slice(0, 12));
-      if (c.length > 12) chunks.push(c.slice(12, Math.min(24, c.length)));
-    }
-    if (chunks.length >= 2) break;
-  }
-  return chunks.length ? chunks : [text];
-}
-function normalizeTopicList(arr) {
-  return Array.from(new Set((arr || []).map(s => String(s || '').trim()).filter(Boolean)));
-}
-
-function buildLifeEventLines(lifeCtx) {
-  if (!lifeCtx || !lifeCtx.events || !lifeCtx.events.length) return [];
-  return lifeCtx.events.slice(0, 6).map(evt => String(evt.title || '').trim()).filter(Boolean);
-}
-
-function buildLifeStateLines(lifeCtx) {
-  if (!lifeCtx || !lifeCtx.state) return [];
-  const s = lifeCtx.state;
-  const lines = [];
-
-  if (s.activity) lines.push(`我刚刚还在${s.activity}`);
-  if (s.place) lines.push(`我现在还在${s.place}`);
-  if (s.focusTarget) lines.push(`我这会儿脑子里全是${s.focusTarget}`);
-
-  if (s.mood === '烦') lines.push('我现在多少有点烦');
-  if (s.mood === '困') lines.push('我现在真的有点困');
-  if (s.mood === '累') lines.push('我现在有点累');
-  if (s.mood === '闷') lines.push('我这会儿情绪有点闷');
-  if (s.mood === '还不错') lines.push('我现在状态还行');
-
-  if (typeof s.energy === 'number' && s.energy < 30) lines.push('我这会儿是真的没什么精神');
-  if (typeof s.hunger === 'number' && s.hunger > 70) lines.push('我现在还有点饿');
-  if (typeof s.sleepiness === 'number' && s.sleepiness > 75) lines.push('我现在困得有点厉害');
-
-  return normalizeTopicList(lines);
-}
-
-function mergeLifeTopics(baseTopics, lifeCtx) {
-  const lifeTopics = [];
-  if (lifeCtx?.state?.focusTarget) lifeTopics.push(lifeCtx.state.focusTarget);
-  if (Array.isArray(lifeCtx?.state?.currentTopicBias)) lifeTopics.push(...lifeCtx.state.currentTopicBias);
-  if (Array.isArray(lifeCtx?.events)) {
-    lifeCtx.events.forEach(evt => {
-      if (evt.title) lifeTopics.push(evt.title);
-      if (evt.activity) lifeTopics.push(evt.activity);
-      if (evt.place) lifeTopics.push(evt.place);
-    });
-  }
-  return normalizeTopicList([...(baseTopics || []), ...lifeTopics]).slice(0, 10);
-}
-
-async function getCharLifeBackfillContext(targetCharId, charData, now) {
-  if (!window.CharLife || !targetCharId) return null;
-  try {
-    const advanced = await window.CharLife.advanceLifeState(targetCharId, charData, now);
-    const snapshot = await window.CharLife.getLifeSnapshot(targetCharId, charData, now);
-    return {
-      state: advanced?.state || snapshot?.state || null,
-      events: normalizeTopicList([
-        ...(advanced?.newEvents || []).map(e => e.title),
-        ...((snapshot?.events || []).map(e => e.title))
-      ]).map(title => ({ title })).slice(0, 6)
-    };
-  } catch (e) {
-    console.warn('getCharLifeBackfillContext error:', e);
-    return null;
-  }
-}
-
-function generateBackfillBubbles(bucketKey, recentGeneratedTexts = [], lifeCtx = null) {
-  const topics = mergeLifeTopics(getLocalKeywords(), lifeCtx);
-  const corpus = buildCharOfflineCorpus();
-  const themePool = buildBucketThemes(bucketKey, topics, corpus, lifeCtx);
-  const historyPool = (corpus.fragments || []).filter(t => {
-    const flavored = applyRoleFlavor(t, corpus);
-    if (!isNaturalBackfillLine(flavored)) return false;
-    if (!topics.length) return true;
-    return topics.some(k => t.includes(k));
-  });
-
-  const recentRealCharTexts = allMessages.value
-    .filter(m => m.role === 'char' && !m.recalled && !m.loading)
-    .slice(-12)
-    .map(m => m.content);
-
-  for (let i = 0; i < 8; i++) {
-    let candidate = '';
-    if (historyPool.length && Math.random() < 0.48) candidate = pick(historyPool);
-    else candidate = pick(themePool);
-
-    candidate = expandShortTag(String(candidate || '').trim());
-    candidate = applyRoleFlavor(candidate, corpus);
-
-    if (!isNaturalBackfillLine(candidate)) continue;
-    if (isTooSimilarText(candidate, recentGeneratedTexts)) continue;
-    if (isTooSimilarText(candidate, recentRealCharTexts)) continue;
-
-    return styleShortBubble(candidate).filter(Boolean);
-  }
-
-  const fallback = applyRoleFlavor(
-    pick([
-      '我刚刚才闲下来',
-      '我现在才有空看消息',
-      '我下午真的有点忙',
-      '这会儿我人还是有点懵',
-      '我刚刚一直在折腾'
-    ]),
-    corpus
-  );
-  return [fallback];
-}
-
-async function getMomentsMode() {
-  return (await dbGet(`momentsMode_${charId}`)) || MOMENTS_MODE_DEFAULT;
-}
-
-async function maybeGenerateMoments(startTs, endTs) {
-  // 每跨2小时一个窗口，按档位概率生成1条；单次回填最多2条
-  const mode = await getMomentsMode();
-  const p = MOMENTS_PROB[mode] ?? MOMENTS_PROB.normal;
-  let count = 0;
-  for (let t = startTs; t < endTs; t += 2 * 60 * 60 * 1000) {
-    if (count >= 2) break;
-    // 深夜概率减半（23–5点）
-    const h = hourOf(t);
-    const inNight = (h >= 23 || h < 5);
-    const prob = inNight ? p / 2 : p;
-    if (Math.random() < prob) {
-      await writeMomentLocal(t);
-      count++;
-    }
-  }
-}
-
-async function writeMomentLocal(ts) {
-  const kws = getLocalKeywords();
-  const text = `随手记：${kws[0] || '路过'} ${kws[1] || ''}`.trim();
-  const all = (await dbGet('moments')) || [];
-  all.unshift({
-    id: ts + Math.floor(Math.random() * 1000),
-    authorType: 'char',
-    charId: charId,
-    charName: charName.value,
-    content: text,
-    visibility: 'all',
-    visibilityChars: [],
-    time: ts,
-    likes: 0,
-    likedChars: [],
-    likedByMe: false,
-    comments: [],
-    pinned: false,
-    simulated: true
-  });
-  if (all.length > 1000) all.splice(1000);
-  await dbSet('moments', all);
-}
-
-function buildSimText(bucketKey, persona) {
-  const tmp = buildTemplates(persona, charName.value);
-  const body = pick(tmp[bucketKey] || tmp.pm);
-  const tail = Math.random() < 0.5 ? (' ' + pick(tmp.tail)) : '';
-  const lead = Math.random() < 0.25 ? (pick(tmp.lead) + ' ') : '';
-  const kws = getLocalKeywords();
-  const kw = Math.random() < 0.6 && kws.length ? (' ' + pick(kws)) : '';
-  return `${lead}${body}${kw}${tail}`.trim();
-}
-
-function distributeIntoBatches(total, weights) {
-  // 返回形如 [{bucket:'am', count:2}, ...]，每批次1-3条，由桶权重决定
-  if (total <= 0) return [];
-  const entries = Object.entries(weights);
-  if (!entries.length) return [];
-  const alloc = entries.map(([k, w]) => ({ k, c: 0, w }));
-  let remain = total;
-  while (remain > 0) {
-    const r = Math.random();
-    let acc = 0;
-    for (const a of alloc) {
-      acc += a.w;
-      if (r <= acc + 1e-8) { a.c += 1; break; }
-    }
-    remain--;
-  }
-  // 每桶再拆成小批，每批1-3条
-  const batches = [];
-  for (const a of alloc) {
-    let left = a.c;
-    while (left > 0) {
-      const take = Math.min(left, randInt(1, Math.min(3, left)));
-      batches.push({ bucket: a.k, count: take });
-      left -= take;
-    }
-  }
-  // 打乱批次顺序
-  return batches.sort(() => Math.random() - 0.5);
-}
-
-async function doBackfillChat() {
-  const threadKey = `chat_${charId}`;
-  const now = Date.now();
-  const lastSeen = (await dbGet(`last_seen_${threadKey}`)) || 0;
-  const lastBackfill = (await dbGet(`last_backfill_${threadKey}`)) || 0;
-  const lastMyMsgTs = allMessages.value.filter(m => m.role === 'user' && !m.recalled && !m.loading).slice(-1)[0]?.timestamp || 0;
-
-  if (!lastSeen) {
-    addCharLog(`[回填跳过] 首次进入 线程=${threadKey}`);
-    await dbSet(`last_seen_${threadKey}`, now);
-    return;
-  }
-
-  const gapStart = Math.max(lastBackfill || 0, lastSeen);
-  const gap = now - gapStart;
-  if (gap < 30 * 60 * 1000) { // 低于30分钟也允许1~2条（你新规则），但若无lastBackfill则从lastSeen计算
-    // 仍遵守冷却
-  }
-
-  // 冷却保护：最近2分钟你发过消息则不回填
-  if (now - lastMyMsgTs < COOLDOWN_MS) {
-    addCharLog(`[回填跳过] 冷却中 距离你上次发言不足${Math.floor(COOLDOWN_MS / 60000)}分钟`);
-    await dbSet(`last_seen_${threadKey}`, now);
-    return;
-  }
-
-  // 计算本次回填总量
-  let total = decideBackfillCount(gap);
-  total = Math.min(total, BACKFILL_MAX_TOTAL);
-  if (total <= 0) {
-    addCharLog(`[回填跳过] gap过短`);
-    await dbSet(`last_seen_${threadKey}`, now);
-    await dbSet(`last_backfill_${threadKey}`, now);
-    return;
-  }
-
-  // 分桶
-  const covered = getCoveredBuckets(gapStart, now);
-  const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
-  const batches = distributeIntoBatches(total, weights);
-
-  const charLifeCtx = await getCharLifeBackfillContext(charId, {
-    name: charName.value,
-    persona: charPersona.value || '',
-    world: charWorld.value || ''
-  }, now);
-
-  if (charLifeCtx?.state) {
-    addCharLog(`[生活状态] ${charLifeCtx.state.currentPhase || ''} · ${charLifeCtx.state.place || '未知地点'} · ${charLifeCtx.state.activity || '发呆'} · 心情=${charLifeCtx.state.mood || '平静'}`);
-  }
-
-  addCharLog(`[回填开始] 线程=chat_${charId} gap=${formatGapLabel(gap)} 计划=${total}条 批次=${batches.length}`);
-
-  await maybeGenerateMoments(gapStart, now);
-
-  const inserts = [];
-  const generatedTexts = [];
-  let cursorTs = gapStart + 2 * 60 * 1000;
-
-  for (const b of batches) {
-    addCharLog(`[回填批次] 时段=${bucketLabel(b.bucket)} 计划=${b.count}条`);
-    const batchGap = randInt(30, 120) * 60 * 1000;
-    cursorTs += batchGap;
-
-    for (let i = 0; i < b.count; i++) {
-      cursorTs += randInt(1, 5) * 60 * 1000;
-      if (cursorTs >= now) cursorTs = now - randInt(1, 5) * 60 * 1000;
-
-      const bubbles = generateBackfillBubbles(b.bucket, generatedTexts, charLifeCtx);
-      generatedTexts.push(bubbles.join(' / '));
-
-      for (const bubble of bubbles) {
-        inserts.push({
-          id: cursorTs + Math.floor(Math.random() * 1000),
-          role: 'char',
-          content: bubble,
-          type: 'normal',
-          recalled: false,
-          revealed: false,
-          timestamp: cursorTs,
-          simulated: true
-        });
-      }
-
-      addCharLog(`[回填通过] ${bubbles.join(' / ')}`);
-    }
-  }
-
-  const merged = [...allMessages.value, ...inserts].sort((a, b) => (a.timestamp || a.id) - (b.timestamp || b.id));
-  allMessages.value.splice(0, allMessages.value.length, ...merged);
-  await saveMessages();
-
-  addCharLog(`[回填完成] 实际插入=${inserts.length}条 动态=已尝试`);
-  await dbSet(`last_seen_${threadKey}`, now);
-  await dbSet(`last_backfill_${threadKey}`, now);
-}
-
+    
 let apiCalling = false;
 
 // ===== 角色记忆写入 =====
@@ -1401,278 +711,568 @@ const writeCharMemory = async (targetCharId, memItem) => {
   await dbSet(key, existing);
 };
 
+const normalizeSocialName = (s) => String(s || '').trim().toLowerCase();
+
+const splitAliasText = (text) => {
+  return String(text || '')
+    .split(/[、，,\/|｜\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+};
+
+const extractRealNameFromPersona = (persona) => {
+  if (!persona) return '';
+  const m = String(persona).match(/(?:真名|本名|姓名|名字|中文名|name|real\s*name)[：:\s]*([^\n，,。；;]+)/i);
+  return m ? m[1].trim() : '';
+};
+
+const extractAliasesFromPersona = (persona) => {
+  if (!persona) return [];
+  const aliases = [];
+
+  const direct = String(persona).match(/(?:别名|昵称|外号|代号|小名|称呼|英文名|aliases?|alias|codename)[：:\s]*([^\n]+)/i);
+  if (direct) aliases.push(...splitAliasText(direct[1]));
+
+  const allQuoted = [...String(persona).matchAll(/(?:又叫|也叫|叫做|被叫做|外号是|昵称是)[：:\s]*[“"「『]?([^”"」』\n，,。；;]+)[”"」』]?/gi)];
+  allQuoted.forEach(m => {
+    if (m[1]) aliases.push(...splitAliasText(m[1]));
+  });
+
+  return Array.from(new Set(aliases.filter(Boolean)));
+};
+
+const extractNameCandidatesFromChar = (charObj) => {
+  const set = new Set();
+  if (!charObj) return [];
+
+  const addName = (v) => {
+    const t = String(v || '').trim();
+    if (t) set.add(t);
+  };
+
+  addName(charObj.name);
+  addName(charObj.realName);
+
+  const personaRealName = extractRealNameFromPersona(charObj.persona || '');
+  addName(personaRealName);
+
+  const aliases = Array.isArray(charObj.aliases)
+    ? charObj.aliases
+    : extractAliasesFromPersona(charObj.persona || '');
+  aliases.forEach(addName);
+
+  return Array.from(set);
+};
+
+const buildContactFromChar = (charObj) => {
+  const realName = charObj.realName || extractRealNameFromPersona(charObj.persona || '');
+  const aliases = Array.isArray(charObj.aliases) && charObj.aliases.length
+    ? Array.from(new Set(charObj.aliases.filter(Boolean)))
+    : extractAliasesFromPersona(charObj.persona || '');
+
+  return {
+    id: charObj.id,
+    name: charObj.name || '',
+    realName: realName || '',
+    aliases,
+    avatar: charObj.avatar || '',
+    persona: charObj.persona || ''
+  };
+};
+
+const getAllCharacterPool = async () => {
+  const [charList, randomCharList] = await Promise.all([
+    dbGet('charList'),
+    dbGet('randomCharList')
+  ]);
+  const merged = [...(charList || []), ...(randomCharList || [])];
+  const map = new Map();
+  for (const c of merged) {
+    if (!c || c.id == null) continue;
+    if (!map.has(c.id)) map.set(c.id, c);
+    else map.set(c.id, { ...map.get(c.id), ...c });
+  }
+  return Array.from(map.values());
+};
+
+const findCharInPoolByAnyName = (pool, rawName) => {
+  const target = normalizeSocialName(rawName);
+  if (!target) return null;
+  return pool.find(c => extractNameCandidatesFromChar(c).some(n => normalizeSocialName(n) === target)) || null;
+};
+
+const findContactByAnyName = (contacts, rawName) => {
+  const target = normalizeSocialName(rawName);
+  if (!target) return null;
+  return contacts.find(c => {
+    const names = new Set();
+    if (c.name) names.add(c.name);
+    if (c.realName) names.add(c.realName);
+    if (Array.isArray(c.aliases)) c.aliases.forEach(a => names.add(a));
+    if (c.persona) {
+      const pr = extractRealNameFromPersona(c.persona);
+      if (pr) names.add(pr);
+      extractAliasesFromPersona(c.persona).forEach(a => names.add(a));
+    }
+    return Array.from(names).some(n => normalizeSocialName(n) === target);
+  }) || null;
+};
+
+const ensureContactForOwner = async (ownerId, targetChar) => {
+  const key = `cwContacts_${ownerId}`;
+  const contacts = JSON.parse(JSON.stringify((await dbGet(key)) || []));
+  let contact = contacts.find(c => c.id === targetChar.id);
+
+  if (!contact) {
+    contact = buildContactFromChar(targetChar);
+    contacts.push(contact);
+    await dbSet(key, contacts);
+  } else {
+    const merged = {
+      ...contact,
+      ...buildContactFromChar(targetChar),
+      aliases: Array.from(new Set([
+        ...(Array.isArray(contact.aliases) ? contact.aliases : []),
+        ...extractAliasesFromPersona(contact.persona || ''),
+        ...extractAliasesFromPersona(targetChar.persona || ''),
+        ...(Array.isArray(targetChar.aliases) ? targetChar.aliases : [])
+      ].filter(Boolean)))
+    };
+    const idx = contacts.findIndex(c => c.id === targetChar.id);
+    contacts[idx] = merged;
+    contact = merged;
+    await dbSet(key, contacts);
+  }
+
+  return contact;
+};
+
+const ensurePrivateChatContainer = async (ownerChar, otherChar) => {
+  const key = `cwPrivateChats_${ownerChar.id}`;
+  const pcs = JSON.parse(JSON.stringify((await dbGet(key)) || []));
+  let pc = pcs.find(p => p.otherId === otherChar.id);
+
+  if (!pc) {
+    pc = {
+      id: Date.now() + Math.floor(Math.random() * 10000),
+      charId: ownerChar.id,
+      charName: ownerChar.name,
+      otherId: otherChar.id,
+      otherName: otherChar.name,
+      otherAvatar: otherChar.avatar || '',
+      relation: '',
+      messages: [],
+      lastMsg: '',
+      lastTime: Date.now()
+    };
+    pcs.push(pc);
+    await dbSet(key, pcs);
+    return pc;
+  }
+
+  pc.charName = ownerChar.name || pc.charName || '';
+  pc.otherName = otherChar.name || pc.otherName || '';
+  pc.otherAvatar = otherChar.avatar || pc.otherAvatar || '';
+
+  const idx = pcs.findIndex(p => p.otherId === otherChar.id);
+  pcs[idx] = pc;
+  await dbSet(key, pcs);
+  return pc;
+};
+
+const savePrivateChatContainer = async (ownerId, pc) => {
+  const key = `cwPrivateChats_${ownerId}`;
+  const pcs = JSON.parse(JSON.stringify((await dbGet(key)) || []));
+  const idx = pcs.findIndex(p => p.otherId === pc.otherId);
+  if (idx === -1) pcs.push(pc);
+  else pcs[idx] = pc;
+  await dbSet(key, pcs);
+};
+
+const parseDialogueLines = (replyText) => {
+  const rawLines = String(replyText || '')
+    .split('&')
+    .map(l => l.trim())
+    .filter(Boolean);
+
+  const result = [];
+  for (const l of rawLines) {
+    if (l.startsWith('【记忆摘要】')) continue;
+    const colonIdx = l.indexOf('：') !== -1 ? l.indexOf('：') : l.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const sender = l.slice(0, colonIdx).trim();
+    const content = l.slice(colonIdx + 1).trim();
+    if (!sender || !content) continue;
+    result.push({ sender, content });
+  }
+  return result;
+};
+
+const parseMemorySummaryFromReply = (replyText) => {
+  let summary = '';
+  let score = 0.5;
+  const m = String(replyText || '').match(/【记忆摘要】\s*(\{[\s\S]*?\})/);
+  if (m) {
+    try {
+      const json = JSON.parse(m[1]);
+      summary = json.summary || '';
+      score = parseFloat(json.score);
+      if (Number.isNaN(score)) score = 0.5;
+    } catch (e) {}
+  }
+  return { summary, score };
+};
+
+const appendMirroredPrivateChat = async (ownerChar, targetChar, dialogueItems) => {
+  await ensureContactForOwner(ownerChar.id, targetChar);
+  await ensureContactForOwner(targetChar.id, ownerChar);
+
+  const ownerPc = await ensurePrivateChatContainer(ownerChar, targetChar);
+  const targetPc = await ensurePrivateChatContainer(targetChar, ownerChar);
+
+  const now = Date.now();
+
+  dialogueItems.forEach((item, i) => {
+    const ts = now + i;
+
+    const ownerRole = normalizeSocialName(item.sender) === normalizeSocialName(ownerChar.name) ? 'char' : 'contact';
+    ownerPc.messages.push({
+      id: ts,
+      role: ownerRole,
+      senderName: item.sender,
+      content: item.content,
+      type: 'normal',
+      recalled: false,
+      revealed: false,
+      timestamp: ts
+    });
+
+    const targetRole = normalizeSocialName(item.sender) === normalizeSocialName(targetChar.name) ? 'char' : 'contact';
+    targetPc.messages.push({
+      id: ts,
+      role: targetRole,
+      senderName: item.sender,
+      content: item.content,
+      type: 'normal',
+      recalled: false,
+      revealed: false,
+      timestamp: ts
+    });
+  });
+
+  ownerPc.lastMsg = ownerPc.messages.slice(-1)[0]?.content || '';
+  ownerPc.lastTime = now;
+  targetPc.lastMsg = targetPc.messages.slice(-1)[0]?.content || '';
+  targetPc.lastTime = now;
+
+  await savePrivateChatContainer(ownerChar.id, ownerPc);
+  await savePrivateChatContainer(targetChar.id, targetPc);
+
+  return { ownerPc, targetPc };
+};
+
+const resolveSocialTarget = async (ownerId, rawName) => {
+  const contacts = JSON.parse(JSON.stringify((await dbGet(`cwContacts_${ownerId}`)) || []));
+  const pool = await getAllCharacterPool();
+
+  const contactHit = findContactByAnyName(contacts, rawName);
+  if (contactHit) {
+    const poolHit = pool.find(c => c.id === contactHit.id) || {
+      id: contactHit.id,
+      name: contactHit.name,
+      realName: contactHit.realName,
+      aliases: contactHit.aliases,
+      avatar: contactHit.avatar,
+      persona: contactHit.persona
+    };
+    return poolHit;
+  }
+
+  const poolHit = findCharInPoolByAnyName(pool, rawName);
+  return poolHit || null;
+};
+
 // ===== 触发角色社交行为 =====
 const triggerSocialAction = async (line) => {
-  // 解析私信格式：【私信:联系人名字|消息内容】
+  const recentMainMsgs = allMessages.value
+    .filter(m => !m.recalled && !m.loading)
+    .slice(-10)
+    .map(m => `${m.role === 'user' ? myName.value : charName.value}：${m.content}`)
+    .join('\n');
+
+  const mainSummariesText = summaries.value
+    .filter(s => s.content)
+    .map(s => s.content)
+    .join('；');
+
+  // 私聊
   const privateMatch = line.match(/^【私信[：:](.+?)[\|｜](.+)】$/);
   if (privateMatch) {
-    const targetName = privateMatch[1].trim();
+    const targetRawName = privateMatch[1].trim();
     const initMsg = privateMatch[2].trim();
-    addCharLog(`${charName.value} 触发私信：→ ${targetName}：${initMsg}`);
 
-    const charList = JSON.parse(JSON.stringify((await dbGet('charList')) || []));
-    const targetChar = charList.find(c => c.name === targetName);
-    if (!targetChar) { addCharLog(`找不到角色：${targetName}`, 'warn'); return; }
+    addCharLog(`${charName.value} 触发私信：→ ${targetRawName}：${initMsg}`);
+
+    const targetChar = await resolveSocialTarget(charId, targetRawName);
+    if (!targetChar || targetChar.id == null) {
+      addCharLog(`找不到可匹配的角色：${targetRawName}`, 'warn');
+      return;
+    }
+    if (targetChar.id === charId) {
+      addCharLog(`私信目标不能是自己：${targetRawName}`, 'warn');
+      return;
+    }
 
     if (!apiConfig.value.url || !apiConfig.value.key || !apiConfig.value.model) return;
 
-    // 读取主单聊前后文
-    const recentMainMsgs = allMessages.value.filter(m => !m.recalled && !m.loading).slice(-10).map(m =>
-      `${m.role === 'user' ? myName.value : charName.value}：${m.content}`
-    ).join('\n');
-    const mainSummariesText = summaries.value.filter(s => s.content).map(s => s.content).join('；');
+    const ownerChar = {
+      id: charId,
+      name: charName.value,
+      avatar: charAvatar.value || '',
+      persona: charPersona.value || '',
+      world: charWorld.value || ''
+    };
 
-    // 读取目标私聊历史
-    const allPcsForMain = JSON.parse(JSON.stringify((await dbGet(`cwPrivateChats_${charId}`)) || []));
-    const existingPcForMain = allPcsForMain.find(p => p.otherId === targetChar.id);
-    const existingPcMsgsForMain = existingPcForMain
-      ? existingPcForMain.messages.slice(-10).map(m => `${m.senderName}：${m.content}`).join('\n')
+    const existingOwnerPcs = JSON.parse(JSON.stringify((await dbGet(`cwPrivateChats_${charId}`)) || []));
+    const existingPc = existingOwnerPcs.find(p => p.otherId === targetChar.id);
+    const existingPcMsgsText = existingPc
+      ? (existingPc.messages || []).slice(-10).map(m => `${m.senderName}：${m.content}`).join('\n')
       : '';
 
-      const recentProxyMsgsPrivate = allMessages.value.filter(m => m.proxyByUser && !m.recalled).slice(-3);
+    const recentProxyMsgsPrivate = allMessages.value.filter(m => m.proxyByUser && !m.recalled).slice(-3);
     const proxyHintPrivate = recentProxyMsgsPrivate.length
-      ? `【特别注意】最近有${recentProxyMsgsPrivate.length}条消息是用户代替${charName.value}发出的，内容是：${recentProxyMsgsPrivate.map(m => '「' + m.content + '」').join('、')}。这些话是用户替${charName.value}说的，不是${charName.value}本人说的。${otherName}如果觉得这些话风格奇怪或者内容荒谬，可以直接质疑或点破，比如说「这不像你会说的话」「你是不是被盗号了」之类的，可以直接说出来或隐晦质疑。${charName.value}也可以对这些被代发的话表示困惑或否认。`
+      ? `【特别注意】最近有${recentProxyMsgsPrivate.length}条消息是用户代替${charName.value}发出的，内容是：${recentProxyMsgsPrivate.map(m => '「' + m.content + '」').join('、')}。这些话是用户替${charName.value}说的，不是${charName.value}本人说的。${targetChar.name}如果觉得这些话风格奇怪或者内容荒谬，可以直接质疑或点破。${charName.value}也可以对这些被代发的话表示困惑或否认。`
       : '';
 
     const systemPrompt = `你现在同时扮演两个角色进行私聊对话。
 角色1：${charName.value}。${charPersona.value ? '人设：' + charPersona.value : ''}${charWorld.value ? '，世界观：' + charWorld.value : ''}
-角色2：${otherName}。${otherPersona ? '人设：' + otherPersona : '无特定人设'}
-${proxyHintPrivate ? proxyHintPrivate : ''}
+角色2：${targetChar.name}。${targetChar.persona ? '人设：' + targetChar.persona : '无特定人设'}
+${proxyHintPrivate || ''}
 
-角色1：${charName.value}。${charPersona.value ? '人设：' + charPersona.value : ''}
-角色2：${targetName}。${targetChar.persona ? '人设：' + targetChar.persona : '无特定人设'}
 ${mainSummariesText ? '【主聊天回忆摘要】' + mainSummariesText : ''}
-【触发背景】以下是触发这次私聊的主聊天最近内容，${charName.value}因此主动联系${targetName}：
+【触发背景】以下是触发这次私聊的主聊天最近内容，${charName.value}因此主动联系${targetChar.name}：
 ${recentMainMsgs || '（对话刚开始）'}
-${existingPcMsgsForMain ? '【两人之前的私聊记录】\n' + existingPcMsgsForMain : ''}
-【任务】生成一段两人之间的私聊对话，从${charName.value}主动发消息开始，第一条消息内容是：${initMsg}
-然后两人自然对话3-8条消息，内容要和触发背景相关，符合当前聊天的情境。
-【格式要求】每条消息格式：名字：内容&
-名字只能是 ${charName.value} 或 ${targetName}。
-【内容要求】口语化，短句，像真实聊天，符合各自人设。不要提及用户，这是两人之间的私下对话。
-【聊天风格】像活人一样线上跨次元对话聊天，这是线上聊天！每句话发一条消息！陈述句不要使用句号，句尾不要乱用标点符号，不要滥用标点符号，要合理使用标点符号，可以发送多条消息！严格按照人设回复！在回复中要展现符合自己人设的性格特点！发的信息口语化，短句，像真实发消息一样，有情绪有语气。
-最后另起一行，输出以下格式（不要省略，必须在所有对话内容之后）：
+${existingPcMsgsText ? '【两人之前的私聊记录】\n' + existingPcMsgsText : ''}
+
+【任务】生成一段两人之间的私聊对话，从${charName.value}主动发消息开始，第一条消息内容必须是：${initMsg}
+然后两人自然对话3-8条消息，内容要和触发背景相关，符合当前聊天情境。
+
+【格式要求】
+每条消息格式：名字：内容&
+名字只能是 ${charName.value} 或 ${targetChar.name}
+
+【内容要求】
+口语化，短句，像真实聊天，符合各自人设
+不要提及用户，这是两人之间的私下对话
+每句话发一条消息，不要把很多句挤在一条里
+
+最后另起一行，输出以下格式（必须放在所有对话之后）：
 【记忆摘要】{"summary":"30字以内的摘要","score":0.85}
-评分标准：普通闲聊0~0.5，较重要的事0.5~0.8，重大事情/约定/情感表达0.8~1。`;
+评分标准：普通闲聊0~0.5，较重要的事0.5~0.8，重大事情/约定/情感表达0.8~1`;
 
     try {
       const res = await fetch(`${apiConfig.value.url.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.value.key}` },
-        body: JSON.stringify({ model: apiConfig.value.model, messages: [{ role: 'user', content: systemPrompt }] })
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiConfig.value.key}`
+        },
+        body: JSON.stringify({
+          model: apiConfig.value.model,
+          messages: [{ role: 'user', content: systemPrompt }]
+        })
       });
+
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content || '';
-      const lines = reply.split('&').map(l => l.trim()).filter(l => l);
+      const dialogueItems = parseDialogueLines(reply);
 
-      // 存入角色世界的私聊记录（cwPrivateChats_${charId}）
-      const pcs = JSON.parse(JSON.stringify((await dbGet(`cwPrivateChats_${charId}`)) || []));
-      // 找到 charId 角色和 targetChar 之间的私聊
-      let pc = pcs.find(p => p.otherId === targetChar.id);
-      if (!pc) {
-        // 如果没有私聊记录，创建一个
-        pc = {
-          id: Date.now(),
-          charId,
-          charName: charName.value,
-          otherId: targetChar.id,
-          otherName: targetName,
-          otherAvatar: '',
-          messages: [],
-          lastMsg: '',
-          lastTime: Date.now()
-        };
-        pcs.push(pc);
-        // 同时确保联系人列表里有这个人
-        const contacts = JSON.parse(JSON.stringify((await dbGet(`cwContacts_${charId}`)) || []));
-        if (!contacts.find(c => c.id === targetChar.id)) {
-          contacts.push({ id: targetChar.id, name: targetName, avatar: '', persona: targetChar.persona || '' });
-          await dbSet(`cwContacts_${charId}`, contacts);
-        }
+      if (!dialogueItems.length) {
+        addCharLog(`私聊生成失败：未解析出有效对话`, 'warn');
+        return;
       }
 
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i];
-        if (l.startsWith('【记忆摘要】')) continue;
+      const { ownerPc } = await appendMirroredPrivateChat(ownerChar, targetChar, dialogueItems);
 
-        const colonIdx = l.indexOf('：') !== -1 ? l.indexOf('：') : l.indexOf(':');
-        if (colonIdx <= 0) continue;
-        const sender = l.slice(0, colonIdx).trim();
-        const content = l.slice(colonIdx + 1).trim();
-        if (!content) continue;
-        // 根据发言者判断role：当前角色发的是char，对方发的是contact
-        const role = sender === charName.value ? 'char' : 'contact';
-        pc.messages.push({
-          id: Date.now() + i,
-          role,
-          senderName: sender,
-          content,
-          type: 'normal',
-          recalled: false,
-          revealed: false,
-          timestamp: Date.now() + i
-        });
+      addCharLog(`私聊生成完成：${charName.value} ↔ ${targetChar.name}，共${dialogueItems.length}条`);
+
+      let { summary: memorySummary, score: memoryScore } = parseMemorySummaryFromReply(reply);
+      if (!memorySummary) {
+        memorySummary = dialogueItems.slice(-3).map(m => `${m.sender}：${m.content}`).join('，').slice(0, 50);
       }
 
-      pc.lastMsg = pc.messages.slice(-1)[0]?.content || '';
-      pc.lastTime = Date.now();
-      const pcIdx = pcs.findIndex(p => p.id === pc.id);
-      if (pcIdx !== -1) pcs[pcIdx] = pc;
-      await dbSet(`cwPrivateChats_${charId}`, pcs);
-      addCharLog(`私聊生成完成：${charName.value} ↔ ${targetName}，共${lines.length}条`);
-      // 解析记忆摘要（从回复末尾找【记忆摘要】行）
-      let memorySummary = '';
-      let memoryScore = 0.5;
-      const memLineMatch = reply.match(/【记忆摘要】\s*(\{[\s\S]*?\})/);
-      if (memLineMatch) {
-        try {
-          const memJson = JSON.parse(memLineMatch[1]);
-          memorySummary = memJson.summary || '';
-          memoryScore = parseFloat(memJson.score) || 0.5;
-        } catch(e) {}
-      }
-      if (!memorySummary && pc.messages.length) {
-        memorySummary = pc.messages.slice(-3).map(m => `${m.senderName}：${m.content}`).join('，').slice(0, 50);
-      }
       if (memorySummary) {
-        const groupKey = `private_${charId}_${targetChar.id}`;
-        const memItem = {
-          id: Date.now(),
+        const pairIds = [charId, targetChar.id].sort((a, b) => a - b);
+        const groupKey = `private_${pairIds[0]}_${pairIds[1]}`;
+        const now = Date.now();
+
+        await writeCharMemory(charId, {
+          id: now,
           groupKey,
           score: memoryScore,
           type: 'private',
           summary: memorySummary,
-          withWho: targetName,
-          members: [charName.value, targetName],
+          withWho: targetChar.name,
+          members: [charName.value, targetChar.name],
           sourceFrom: '',
           hidden: false,
           injectOverride: null,
-          time: Date.now()
-        };
-        // 写入当前角色记忆
-        await writeCharMemory(charId, memItem);
-        // 写入对面角色记忆
-        await writeCharMemory(targetChar.id, { ...memItem, id: Date.now() + 1, withWho: charName.value });
-        addCharLog(`记忆已写入：${charName.value} ↔ ${targetName}，评分${memoryScore}`);
+          time: now
+        });
+
+        await writeCharMemory(targetChar.id, {
+          id: now + 1,
+          groupKey,
+          score: memoryScore,
+          type: 'private',
+          summary: memorySummary,
+          withWho: charName.value,
+          members: [charName.value, targetChar.name],
+          sourceFrom: '',
+          hidden: false,
+          injectOverride: null,
+          time: now + 1
+        });
+
+        addCharLog(`记忆已写入：${charName.value} ↔ ${targetChar.name}，评分${memoryScore}`);
       }
 
-      // 注入社交记录到记忆
       if (socialInjectOn.value) {
         const injectCount = socialInjectCount.value || 5;
-        const recentMsgs = pc.messages.slice(-injectCount).map(m => `${m.senderName}：${m.content}`).join('\n');
-        const injectContent = `【社交记录-${targetName}】${charName.value}最近和${targetName}的私下对话：\n${recentMsgs}`;
-        summaries.value = summaries.value.filter(s => !s.content.startsWith(`【社交记录-${targetName}】`));
-        summaries.value.push({ content: injectContent, pos: 'after_system', time: new Date().toLocaleString() });
+        const recentMsgs = (ownerPc.messages || [])
+          .slice(-injectCount)
+          .map(m => `${m.senderName}：${m.content}`)
+          .join('\n');
+
+        const injectContent = `【社交记录-${targetChar.name}】${charName.value}最近和${targetChar.name}的私下对话：\n${recentMsgs}`;
+        summaries.value = summaries.value.filter(s => !s.content.startsWith(`【社交记录-${targetChar.name}】`));
+        summaries.value.push({
+          content: injectContent,
+          pos: 'after_system',
+          time: new Date().toLocaleString()
+        });
         await dbSet(`summaries_${charId}`, JSON.parse(JSON.stringify(summaries.value)));
-        addCharLog(`社交记录已注入记忆：${targetName}`);
+        addCharLog(`社交记录已注入记忆：${targetChar.name}`);
       }
     } catch (e) {
       addCharLog(`私信生成失败：${e.message}`, 'error');
     }
+
     return;
   }
 
-  // 解析群发格式：【群发:群名字】
+  // 群发
   const groupMatch = line.match(/^【群发[：:](.+?)(?:[\|｜](.+))?】$/);
   if (groupMatch) {
     const groupName = groupMatch[1].trim();
     const groupInitMsg = groupMatch[2] ? groupMatch[2].trim() : '';
     addCharLog(`${charName.value} 触发群发：→ ${groupName}${groupInitMsg ? '：' + groupInitMsg : ''}`);
 
-    // 先找 roomList，再找 cwLocalGroups
     const roomList = JSON.parse(JSON.stringify((await dbGet('roomList')) || []));
     const localGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${charId}`)) || []));
     const allGroups = [...roomList, ...localGroups];
     const group = allGroups.find(r => r.name === groupName);
-    if (!group) { addCharLog(`找不到群：${groupName}`, 'warn'); return; }
-    const isLocalGroup = !roomList.find(r => r.id === group.id);
 
-    const memberNames = group.members.map(m => m.name).join('、');
-    const membersDesc = group.members.map(m => `${m.name}${m.persona ? '（' + m.persona + '）' : ''}`).join('、');
+    if (!group) {
+      addCharLog(`找不到群：${groupName}`, 'warn');
+      return;
+    }
+
+    const isLocalGroup = !roomList.find(r => r.id === group.id);
+    const memberNamesText = (group.members || []).map(m => m.name).join('、');
+    const membersDesc = (group.members || [])
+      .map(m => `${m.name}${m.persona ? '（' + m.persona + '）' : ''}`)
+      .join('、');
 
     if (!apiConfig.value.url || !apiConfig.value.key || !apiConfig.value.model) return;
 
-    // 读取小群已有历史和总结
-    const existingGroupMsgsText = group.messages.slice(-10).map(m => `${m.senderName}：${m.content}`).join('\n');
+    const existingGroupMsgsText = (group.messages || [])
+      .slice(-10)
+      .map(m => `${m.senderName}：${m.content}`)
+      .join('\n');
 
     const systemPrompt = `你现在扮演群聊「${groupName}」里的所有成员，成员有：${membersDesc}。
 ${mainSummariesText ? '【主聊天回忆摘要】' + mainSummariesText : ''}
 【触发背景】以下是触发这次群聊的主聊天最近内容：
 ${recentMainMsgs || '（对话刚开始）'}
 ${existingGroupMsgsText ? '【小群之前的聊天记录】\n' + existingGroupMsgsText : ''}
+
 【任务】生成一段群里的自然对话，5-15条消息，成员自由发言。${groupInitMsg ? `对话从${charName.value}说「${groupInitMsg}」开始。` : ''}内容要和触发背景相关。
+
 【格式要求】每条消息格式：名字：内容&
-名字只能是以下之一：${memberNames}
+名字只能是以下之一：${memberNamesText}
+
 【内容要求】口语化，短句，像真实群聊，符合各自人设，可以互相@，可以聊日常。
-【聊天风格】像活人一样线上跨次元对话聊天，这是线上聊天！每句话发一条消息！陈述句不要使用句号，句尾不要乱用标点符号，不要滥用标点符号，要合理使用标点符号，可以发送多条消息！严格按照人设回复！在回复中要展现符合自己人设的性格特点！发的信息口语化，短句，像真实发消息一样，有情绪有语气。
-最后另起一行，输出以下格式（不要省略，必须在所有对话内容之后）：
+
+最后另起一行，输出以下格式（必须放在所有对话之后）：
 【记忆摘要】{"summary":"30字以内的摘要","score":0.5}
-评分标准：普通闲聊0~0.5，较重要的事0.5~0.8，重大事情/约定/情感表达0.8~1。`;
+评分标准：普通闲聊0~0.5，较重要的事0.5~0.8，重大事情/约定/情感表达0.8~1`;
 
     try {
       const res = await fetch(`${apiConfig.value.url.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiConfig.value.key}` },
-        body: JSON.stringify({ model: apiConfig.value.model, messages: [{ role: 'user', content: systemPrompt }] })
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiConfig.value.key}`
+        },
+        body: JSON.stringify({
+          model: apiConfig.value.model,
+          messages: [{ role: 'user', content: systemPrompt }]
+        })
       });
+
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content || '';
-      const lines = reply.split('&').map(l => l.trim()).filter(l => l);
+      const dialogueItems = parseDialogueLines(reply);
 
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i];
-        // 过滤记忆摘要行
-        if (l.startsWith('【记忆摘要】')) continue;
-
-        const colonIdx = l.indexOf('：') !== -1 ? l.indexOf('：') : l.indexOf(':');
-        if (colonIdx <= 0) continue;
-        const sender = l.slice(0, colonIdx).trim();
-        const content = l.slice(colonIdx + 1).trim();
-        if (!content) continue;
-        const member = group.members.find(m => m.name === sender);
+      for (let i = 0; i < dialogueItems.length; i++) {
+        const item = dialogueItems[i];
+        const ts = Date.now() + i;
+        const member = (group.members || []).find(m => m.name === item.sender);
         group.messages.push({
-          id: Date.now() + i,
+          id: ts,
           role: 'char',
-          senderName: sender,
+          senderName: item.sender,
           memberId: member?.id || null,
-          content,
+          content: item.content,
           type: 'normal',
           recalled: false,
           revealed: false,
-          timestamp: Date.now() + i
+          timestamp: ts
         });
       }
 
       group.lastMsg = group.messages.slice(-1)[0]?.content || '';
       group.lastTime = Date.now();
+
       if (isLocalGroup) {
         const lgIdx = localGroups.findIndex(r => r.id === group.id);
-        if (lgIdx !== -1) { localGroups[lgIdx] = group; await dbSet(`cwLocalGroups_${charId}`, localGroups); }
+        if (lgIdx !== -1) {
+          localGroups[lgIdx] = group;
+          await dbSet(`cwLocalGroups_${charId}`, localGroups);
+        }
       } else {
         const gIdx = roomList.findIndex(r => r.id === group.id);
-        if (gIdx !== -1) { roomList[gIdx] = group; await dbSet('roomList', roomList); }
+        if (gIdx !== -1) {
+          roomList[gIdx] = group;
+          await dbSet('roomList', roomList);
+        }
       }
-      addCharLog(`群聊生成完成：${groupName}，共${lines.length}条`);
-      // 解析记忆摘要
-      let groupMemorySummary = '';
-      let groupMemoryScore = 0.5;
-      const groupMemLineMatch = reply.match(/【记忆摘要】\s*(\{[\s\S]*?\})/);
-      if (groupMemLineMatch) {
-        try {
-          const memJson = JSON.parse(groupMemLineMatch[1]);
-          groupMemorySummary = memJson.summary || '';
-          groupMemoryScore = parseFloat(memJson.score) || 0.5;
-        } catch(e) {}
-      }
+
+      addCharLog(`群聊生成完成：${groupName}，共${dialogueItems.length}条`);
+
+      let { summary: groupMemorySummary, score: groupMemoryScore } = parseMemorySummaryFromReply(reply);
       if (!groupMemorySummary && group.messages.length) {
         groupMemorySummary = group.messages.slice(-3).map(m => `${m.senderName}：${m.content}`).join('，').slice(0, 50);
       }
+
       if (groupMemorySummary) {
         const groupMemKey = `miniGroup_${group.id}`;
-        const memberNames = group.members.map(m => m.name);
-        for (const member of group.members) {
+        const memberNames = (group.members || []).map(m => m.name);
+
+        for (const member of group.members || []) {
           if (!member.id) continue;
-          const memItem = {
+          await writeCharMemory(member.id, {
             id: Date.now() + Math.random(),
             groupKey: groupMemKey,
             score: groupMemoryScore,
@@ -1684,19 +1284,22 @@ ${existingGroupMsgsText ? '【小群之前的聊天记录】\n' + existingGroupM
             hidden: false,
             injectOverride: null,
             time: Date.now()
-          };
-          await writeCharMemory(member.id, memItem);
+          });
         }
+
         addCharLog(`群聊记忆已写入：${groupName}，评分${groupMemoryScore}`);
       }
 
-      // 注入社交记录
       if (socialInjectOn.value) {
         const injectCount = socialInjectCount.value || 5;
         const recentMsgs = group.messages.slice(-injectCount).map(m => `${m.senderName}：${m.content}`).join('\n');
         const injectContent = `【社交记录-群${groupName}】${charName.value}最近在群「${groupName}」里的聊天：\n${recentMsgs}`;
         summaries.value = summaries.value.filter(s => !s.content.startsWith(`【社交记录-群${groupName}】`));
-        summaries.value.push({ content: injectContent, pos: 'after_system', time: new Date().toLocaleString() });
+        summaries.value.push({
+          content: injectContent,
+          pos: 'after_system',
+          time: new Date().toLocaleString()
+        });
         await dbSet(`summaries_${charId}`, JSON.parse(JSON.stringify(summaries.value)));
         addCharLog(`社交记录已注入记忆：群${groupName}`);
       }
@@ -1761,19 +1364,27 @@ ${existingGroupMsgsText ? '【小群之前的聊天记录】\n' + existingGroupM
       const memInjectOn = memGlobalSettings.injectOn !== false;
       const memInjectCount = parseInt(memGlobalSettings.myChatsCount) || 20;
       let charMemoryText = '';
-      // 优先用预检索缓存，没有缓存则实时检索
-      if (!memorySearchCache) await runMemorySearch();
-      const cachedMems = memorySearchCache?.charMems || [];
-      if (cachedMems.length) {
-        charMemoryText = `【${charName.value}的私人记忆，其他人不知道】\n` +
-          cachedMems.map(m => `[${m.score.toFixed(2)}] ${m.summary}`).join('\n');
+      if (memInjectOn) {
+        const charMemData = JSON.parse(JSON.stringify((await dbGet(`charMemory_${charId}`)) || []));
+        const charMemGroups = JSON.parse(JSON.stringify((await dbGet(`charMemoryGroups_${charId}`)) || []));
+        // 过滤：hidden=false，且注入目标包含当前 charId
+        const validMems = charMemData.filter(m => {
+          if (m.hidden) return false;
+          let injectTo;
+          if (m.injectOverride) {
+            injectTo = m.injectOverride;
+          } else {
+            const grp = charMemGroups.find(g => g.groupKey === m.groupKey);
+            injectTo = grp ? grp.injectTo : { myChats: [charId], groups: [] };
+          }
+          return injectTo && injectTo.myChats && injectTo.myChats.includes(charId);
+        });
+        const topMems = validMems.slice().sort((a, b) => b.score - a.score).slice(0, memInjectCount);
+        if (topMems.length) {
+          charMemoryText = `【${charName.value}的私人记忆，其他人不知道】\n` +
+            topMems.map(m => `[${m.score.toFixed(2)}] ${m.summary}`).join('\n');
+        }
       }
-      // 核心记忆始终注入
-      const coreMems = memorySearchCache?.coreMems || [];
-      const coreMemText = coreMems.length
-        ? `【${charName.value}的核心重要记忆（始终牢记）】\n` + coreMems.map(m => `- ${m.content}`).join('\n')
-        : '';
-
 
         const buildMomentsText = async () => {
           const allMoments = (await dbGet('moments')) || [];
@@ -1805,34 +1416,9 @@ ${existingGroupMsgsText ? '【小群之前的聊天记录】\n' + existingGroupM
           return `【动态信息】${parts.join('；')}`;
         };
         const momentsText = await buildMomentsText();
-        let charLifePrompt = '';
-        if (window.CharLife) {
-          try {
-            const lifeSnapshot = await window.CharLife.getLifeSnapshot(charId, {
-              name: charName.value,
-              persona: charPersona.value || '',
-              world: charWorld.value || ''
-            }, Date.now());
-            const ls = lifeSnapshot?.state;
-            const le = (lifeSnapshot?.events || []).slice(0, 5);
-            if (ls) {
-              charLifePrompt =
-                `【角色当前生活状态】时段：${ls.currentPhase || '未知'}；地点：${ls.place || '未知'}；活动：${ls.activity || '未知'}；心情：${ls.mood || '平静'}；精力：${ls.energy ?? '-'}；饥饿：${ls.hunger ?? '-'}；困意：${ls.sleepiness ?? '-'}；社交需求：${ls.socialNeed ?? '-'}；当前重点：${ls.focusTarget || '无'}；今日节奏：${ls.dayStyle || '平稳'}。`;
-              if (Array.isArray(ls.currentTopicBias) && ls.currentTopicBias.length) {
-                charLifePrompt += `【当前偏好话题】${ls.currentTopicBias.join('、')}。`;
-              }
-              if (le.length) {
-                charLifePrompt += `【最近事件】${le.map(e => e.title).filter(Boolean).join('；')}。`;
-              }
-            }
-          } catch (e) {
-            console.warn('CharLife prompt build error:', e);
-          }
-        }
-
-        const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${proxyHint ? proxyHint + '。' : ''}${charLifePrompt ? charLifePrompt : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${momentsText ? momentsText + '。' : ''}${wbJailbreak ? wbJailbreak + '。' : ''}你现在扮演一个角色，角色名是${charName.value}。
+        const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${proxyHint ? proxyHint + '。' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${momentsText ? momentsText + '。' : ''}${wbJailbreak ? wbJailbreak + '。' : ''}你现在扮演一个角色，角色名是${charName.value}。
 ${charWorld.value ? '世界观背景：' + charWorld.value + '。' : ''}${wbWorldview ? '补充世界观：' + wbWorldview + '。' : ''}${charPersona.value ? '角色人设：' + charPersona.value + '。' : ''}${wbPersona ? '人设补充：' + wbPersona + '。' : ''}
-${coreMemText ? coreMemText + '\n' : ''}${charMemoryText ? charMemoryText + '\n' : ''}${myPersona.value ? '与你对话的人(我)叫' + myName.value + '，与你对话的人（我）的人设：' + myPersona.value + '。' : ''}${realtimeTimeOn.value ? `【当前时间】现在是${new Date().toLocaleString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short'})}，你知道现在的准确时间。` : ''}
+${charMemoryText ? charMemoryText + '\n' : ''}${myPersona.value ? '与你对话的人(我)叫' + myName.value + '，与你对话的人（我）的人设：' + myPersona.value + '。' : ''}${realtimeTimeOn.value ? `【当前时间】现在是${new Date().toLocaleString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short'})}，你知道现在的准确时间。` : ''}
 
 【核心原则】人设高于一切。所有规则服务于人设，若有冲突，以人设为准。
 【角色扮演】严格保持 ${charName} 的身份和性格，永远不承认自己是AI，不跳出角色，你就是 ${charName} 本人，有真实的情绪、喜好、日常生活，不是助手也不是工具。
@@ -1848,11 +1434,9 @@ ${coreMemText ? coreMemText + '\n' : ''}${charMemoryText ? charMemoryText + '\n'
 - 禁止同一回复中重复表达相同意思
 - 禁止用"\n"文字代替真正换行
 
-【特殊消息格式】如果你想发送心声请用格式：【心声：你的心声内容】，例句：【心声：好可爱啊…好喜欢你】。注意：聊天记录里出现的【系统感知-心声：xxx】是系统传递给你感知的心声内容，不是你应该输出的格式，你输出心声只能用【心声：xxx】。如果你想引用某句话来回复，请用格式：【引用：被引用消息的原文】你的回复内容，例句：【引用：喜欢你…】我也是。注意：【引用：xxx】后面的回复内容里禁止再重复引用的原文，直接写你的回复就好；如果你想撤回你刚才说的话，请单独发一行：【撤回】。如果你想撤回你刚才说的话，请单独发一行：【撤回】。如果你想收藏某句有意义的话，请单独发一行：【收藏：消息内容|收藏理由】，例：【收藏：我喜欢你|好甜】。你应该主动且频繁地收藏我说的话，只要我说了任何让你觉得温暖、有趣、心动、好笑、感动、或者想记住的话，都要立刻收藏，不要吝啬收藏，收藏后可以顺带说一句你为什么收藏它。如果你想发一条朋友圈动态，请单独发一行：【动态：动态内容|可见范围】，可见范围可以是：all（所有人可见）、self（仅自己可见）、only:用户名（仅指定人可见，多人用逗号分隔）、except:用户名（指定人不可见）。例：【动态：今天心情不错，阳光很好|all】或【动态：有点难过|self】或【动态：想你了|only:${myName.value}】。动态内容要符合你的人设和当前情绪状态，口语化自然，不超过50字，不要emoji，不要标签。你可以偶尔发动态，不需要频繁，在聊天触发了某种情绪或发生了有意思的事时自然发出即可。如果你想评论或回复动态，请单独发一行：【动态评论：动态id|评论内容】，例：【动态评论：1234567890|哈哈谢谢你】。如果你想给动态点赞，请单独发一行：【动态点赞：动态id】，例：【动态点赞：1234567890】。你可以主动评论或点赞我发的动态，也可以回复动态下已有的评论，要自然口语化，符合人设，不要每次都评论或点赞，偶尔自然地互动即可。动态id在【动态信息】里每条动态的[id:xxxxx]里。${charStickerCats.value.length ? '如果你想发送表情包，格式：【表情包：表情包名字】，可用的表情包名字：' + charStickerCats.value.flatMap(catName => { const cat = stickerData.value.categories.find(c => c.name === catName); return cat ? cat.emojis.map(e => e.name) : []; }).join('、') + '。注意只发表情包名字不发URL。' : ''}${isBlocked.value ? '【拉黑状态】你现在已被用户(我)拉黑！你知道自己被拉黑了，你可以乞求用户(我)不要拉黑你，哀求ta(我)重新把你添加回来，表现出不安、委屈、渴望联系的情绪，每条消息都要体现出你被拉黑后的状态。' : ''}${iBlockedByChar.value ? '【拉黑状态】你现在已将用户(我)拉黑了！你可以冷漠、强硬地回应，也可以随时选择解除拉黑。如果你想解除对用户(我)的拉黑，请单独发一行：【解除拉黑】。' : '【拉黑权限】你也可以选择拉黑用户(我)，如果你决定拉黑用户(我)，请单独发一行：【拉黑用户】，拉黑后用户(我)发的消息会有红色标记。'}      ${wbPrompt ? '【额外设定】' + wbPrompt + '。' : ''}${foreignOn.value ? buildForeignPrompt() : ''}${socialPrompt}如果你觉得某件事非常重要、想永远记住，请单独发一行：【存入重要记忆：要记住的内容】，例：【存入重要记忆：用户告诉我他最喜欢的颜色是蓝色】。核心记忆会被永久保存，每次聊天都会提醒你记住。`;
-      const beforeHistorySummaries = (memorySearchCache?.beforeSummaries || summaries.value.filter(s => s.pos === 'before_history'))
-        .map(s => ({ role: 'system', content: `【回忆摘要】${s.content}` }));
-      const afterSystemSummaries = (memorySearchCache?.afterSummaries || summaries.value.filter(s => s.pos === 'after_system'))
-        .map(s => `【回忆摘要】${s.content}`).join('；');
+【特殊消息格式】如果你想发送心声请用格式：【心声：你的心声内容】，例句：【心声：好可爱啊…好喜欢你】。注意：聊天记录里出现的【系统感知-心声：xxx】是系统传递给你感知的心声内容，不是你应该输出的格式，你输出心声只能用【心声：xxx】。如果你想引用某句话来回复，请用格式：【引用：被引用消息的原文】你的回复内容，例句：【引用：喜欢你…】我也是。注意：【引用：xxx】后面的回复内容里禁止再重复引用的原文，直接写你的回复就好；如果你想撤回你刚才说的话，请单独发一行：【撤回】。如果你想撤回你刚才说的话，请单独发一行：【撤回】。如果你想收藏某句有意义的话，请单独发一行：【收藏：消息内容|收藏理由】，例：【收藏：我喜欢你|好甜】。你应该主动且频繁地收藏我说的话，只要我说了任何让你觉得温暖、有趣、心动、好笑、感动、或者想记住的话，都要立刻收藏，不要吝啬收藏，收藏后可以顺带说一句你为什么收藏它。如果你想发一条朋友圈动态，请单独发一行：【动态：动态内容|可见范围】，可见范围可以是：all（所有人可见）、self（仅自己可见）、only:用户名（仅指定人可见，多人用逗号分隔）、except:用户名（指定人不可见）。例：【动态：今天心情不错，阳光很好|all】或【动态：有点难过|self】或【动态：想你了|only:${myName.value}】。动态内容要符合你的人设和当前情绪状态，口语化自然，不超过50字，不要emoji，不要标签。你可以偶尔发动态，不需要频繁，在聊天触发了某种情绪或发生了有意思的事时自然发出即可。如果你想评论或回复动态，请单独发一行：【动态评论：动态id|评论内容】，例：【动态评论：1234567890|哈哈谢谢你】。如果你想给动态点赞，请单独发一行：【动态点赞：动态id】，例：【动态点赞：1234567890】。你可以主动评论或点赞我发的动态，也可以回复动态下已有的评论，要自然口语化，符合人设，不要每次都评论或点赞，偶尔自然地互动即可。动态id在【动态信息】里每条动态的[id:xxxxx]里。${charStickerCats.value.length ? '如果你想发送表情包，格式：【表情包：表情包名字】，可用的表情包名字：' + charStickerCats.value.flatMap(catName => { const cat = stickerData.value.categories.find(c => c.name === catName); return cat ? cat.emojis.map(e => e.name) : []; }).join('、') + '。注意只发表情包名字不发URL。' : ''}${isBlocked.value ? '【拉黑状态】你现在已被用户(我)拉黑！你知道自己被拉黑了，你可以乞求用户(我)不要拉黑你，哀求ta(我)重新把你添加回来，表现出不安、委屈、渴望联系的情绪，每条消息都要体现出你被拉黑后的状态。' : ''}${iBlockedByChar.value ? '【拉黑状态】你现在已将用户(我)拉黑了！你可以冷漠、强硬地回应，也可以随时选择解除拉黑。如果你想解除对用户(我)的拉黑，请单独发一行：【解除拉黑】。' : '【拉黑权限】你也可以选择拉黑用户(我)，如果你决定拉黑用户(我)，请单独发一行：【拉黑用户】，拉黑后用户(我)发的消息会有红色标记。'}      ${wbPrompt ? '【额外设定】' + wbPrompt + '。' : ''}${foreignOn.value ? buildForeignPrompt() : ''}${socialPrompt}`;
+      const beforeHistorySummaries = summaries.value.filter(s => s.pos === 'before_history').map(s => ({ role: 'system', content: `【回忆摘要】${s.content}` }));
+      const afterSystemSummaries = summaries.value.filter(s => s.pos === 'after_system').map(s => `【回忆摘要】${s.content}`).join('；');
 
       const readCount = parseInt(aiReadCountInput.value) || 20;
       const historyMsgs = allMessages.value.filter(m => !m.recalled && !m.loading).slice(-readCount).map(m => {
@@ -1917,17 +1501,24 @@ const lines = processedReply.split('\n').map(l => l.trim()).filter(l => l.length
 
           let msgType = 'normal';
           let msgQuoteId = null;
+
           const whisperMatch =
-  line.match(/^【心声[：:](.+)】$/) ||
-  line.match(/^\[心声[：:](.+)\]$/) ||
-  line.match(/^【系统感知-心声[：:](.+)】$/) ||
-  line.match(/^\[系统感知-心声[：:](.+)\]$/);
+            line.match(/^【心声[：:](.+)】$/) ||
+            line.match(/^\[心声[：:](.+)\]$/) ||
+            line.match(/^【系统感知-心声[：:](.+)】$/) ||
+            line.match(/^\[系统感知-心声[：:](.+)\]$/);
 
-if (whisperMatch) { line = whisperMatch[1].trim(); msgType = 'whisper'; }
+          if (whisperMatch) {
+            line = whisperMatch[1].trim();
+            msgType = 'whisper';
+          }
 
-// 自动适配错误格式的心声
-const whisperErrorMatch = line.match(/[（(]你窥探到了对方的心声！?不要在聊天中明确提及[：:]?(.+?)[。）)]/);
-if (whisperErrorMatch) { line = whisperErrorMatch[1].trim(); msgType = 'whisper'; }
+          // 自动适配错误格式的心声
+          const whisperErrorMatch = line.match(/[（(]你窥探到了对方的心声！?不要在聊天中明确提及[：:]?(.+?)[。）)]/);
+          if (whisperErrorMatch) {
+            line = whisperErrorMatch[1].trim();
+            msgType = 'whisper';
+          }
           const quoteMatch = line.match(/^【引用[^：:】]*[：:]([^】]+)】(.*)$/) || line.match(/^\[引用[^\]：:]*[：:]([^\]]+)\](.*)$/);
           if (quoteMatch) {
             const quotedContent = quoteMatch[1].trim();
@@ -1969,37 +1560,35 @@ if (whisperErrorMatch) { line = whisperErrorMatch[1].trim(); msgType = 'whisper'
             if (lastCharMsg) { lastCharMsg.recalled = true; await saveMessages(); }
             continue;
           }
-          // 解析核心记忆
-          const coreMemMatch = line.match(/^【存入重要记忆[：:](.+)】$/);
-          if (coreMemMatch) {
-            const coreMemContent = coreMemMatch[1].trim();
-            const existingCoreMems = JSON.parse(JSON.stringify((await dbGet(`charCoreMemory_${charId}`)) || []));
-            if (existingCoreMems.length < 10) {
-              existingCoreMems.push({ id: Date.now(), content: coreMemContent, time: Date.now() });
-              await dbSet(`charCoreMemory_${charId}`, existingCoreMems);
-              addCharLog(`核心记忆已存入：${coreMemContent}`);
-            }
-            continue;
-          }
           // 解析角色主动添加联系人
           const addContactMatch = line.match(/^【添加联系人[：:](.+)】$/);
           if (addContactMatch) {
-            const targetName = addContactMatch[1].trim();
-            const allCharListForContact = JSON.parse(JSON.stringify((await dbGet('charList')) || []));
-            const targetChar = allCharListForContact.find(c => c.name === targetName);
-            if (targetChar) {
-              const contacts = JSON.parse(JSON.stringify((await dbGet(`cwContacts_${charId}`)) || []));
-              if (!contacts.find(c => c.id === targetChar.id)) {
-                contacts.push({ id: targetChar.id, name: targetName, avatar: targetChar.avatar || '', persona: targetChar.persona || '' });
-                await dbSet(`cwContacts_${charId}`, contacts);
-                const pcs = JSON.parse(JSON.stringify((await dbGet(`cwPrivateChats_${charId}`)) || []));
-                if (!pcs.find(p => p.otherId === targetChar.id)) {
-                  pcs.push({ id: Date.now(), charId, charName: charName.value, otherId: targetChar.id, otherName: targetName, otherAvatar: '', relation: '', messages: [], lastMsg: '', lastTime: Date.now() });
-                  await dbSet(`cwPrivateChats_${charId}`, pcs);
-                }
-                addCharLog(`${charName.value} 主动添加了联系人：${targetName}`);
-              }
+            const targetRawName = addContactMatch[1].trim();
+
+            const targetChar = await resolveSocialTarget(charId, targetRawName);
+            if (!targetChar || targetChar.id == null) {
+              addCharLog(`${charName.value} 尝试添加联系人失败：找不到角色 ${targetRawName}`, 'warn');
+              continue;
             }
+
+            if (targetChar.id === charId) {
+              addCharLog(`${charName.value} 不能把自己添加为联系人`, 'warn');
+              continue;
+            }
+
+            await ensureContactForOwner(charId, targetChar);
+
+            const ownerChar = {
+              id: charId,
+              name: charName.value,
+              avatar: charAvatar.value || '',
+              persona: charPersona.value || '',
+              world: charWorld.value || ''
+            };
+
+            await ensurePrivateChatContainer(ownerChar, targetChar);
+
+            addCharLog(`${charName.value} 主动添加了联系人：${targetChar.name}`);
             continue;
           }
 
@@ -2139,7 +1728,6 @@ if (momentMatch) {
           refreshIcons();
         }
         await writeGlobalLog(`API回复成功，共${lines.length}条消息`, 'info', `聊天-${charName.value}`);
-        memorySearchCache = null;
         addCharLog(`API回复成功，共${lines.length}条消息`);
         addCharLog(`原始回复：${reply}`);
       } catch (e) {
@@ -2152,28 +1740,6 @@ alert('连接失败：' + e.message);
       apiCalling = false;
       await saveMessages();
       nextTick(() => { scrollToBottom(); refreshIcons(); });
-    };
-    const refreshLifeStatus = async () => {
-      if (!window.CharLife) return;
-      lifeStatusLoading.value = true;
-      try {
-        lifeStatusData.value = await window.CharLife.getLifeSnapshot(charId, {
-          name: charName.value,
-          persona: charPersona.value || '',
-          world: charWorld.value || ''
-        }, Date.now());
-      } catch (e) {
-        console.warn('refreshLifeStatus error:', e);
-        lifeStatusData.value = null;
-      }
-      lifeStatusLoading.value = false;
-    };
-
-    const openLifeStatus = async () => {
-      toolbarOpen.value = false;
-      lifeStatusShow.value = true;
-      await refreshLifeStatus();
-      nextTick(() => refreshIcons());
     };
 
     const openPeekSoul = () => { toolbarOpen.value = false; peekResult.value = null; peekSoulShow.value = true; nextTick(() => refreshIcons()); };
@@ -3526,30 +3092,8 @@ if (notifyOnData !== null) notifyOn.value = notifyOnData;
 const notifySystemOnData = await dbGet(`notifySystemOn_${charId}`);
 if (notifySystemOnData !== null) notifySystemOn.value = notifySystemOnData;
 
-const savedMemorySearchOn = await dbGet(`memorySearchOn_${charId}`);
-if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) memorySearchOn.value = savedMemorySearchOn;
 
       try { await loadBeauty(); } catch(e) { console.warn('loadBeauty error:', e); }
-
-// ===== 回填执行（主单聊）=====
-try {
-  await doBackfillChat();
-} catch (e) {
-  console.warn('backfill error:', e);
-}
-// 记录 last_seen
-await dbSet(`last_seen_chat_${charId}`, Date.now());
-
-// 页面隐藏/关闭时更新 last_seen
-window.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'hidden') {
-    await dbSet(`last_seen_chat_${charId}`, Date.now());
-  }
-});
-window.addEventListener('pagehide', async () => {
-  await dbSet(`last_seen_chat_${charId}`, Date.now());
-});
-
       setTimeout(() => {
         try { refreshIcons(); } catch(e) {}
         try { scrollToBottom(); } catch(e) {}
@@ -3582,7 +3126,6 @@ window.addEventListener('pagehide', async () => {
       beautyWallpaperFile, charAvatarFile, myAvatarFile, charAvatarUrl, myAvatarUrl,
       toggleToolbar, goBack, getMsg,
       sendMsg, sendWhisper, callApi,
-      lifeStatusShow, lifeStatusLoading, lifeStatusData, openLifeStatus, refreshLifeStatus,
       openPeekSoul, doPeekSoul, peekHistory, peekHistoryShow,
       openDimensionMirror, doMirror, mirrorHistory, mirrorHistoryShow,
       openMySettings, saveMySettings,
@@ -3655,7 +3198,6 @@ openPeekHistory, openMirrorHistory,
       charWorldSettingShow, charWorldLockType, charWorldPin, charWorldPattern, charWorldQuestion, charWorldAnswer, charWorldGoldenFinger, charWorldAiLoading, charWorldAiResult, charWorldLockOptions, togglePatternDot, aiSetCharWorldLock, saveCharWorldSetting, saveCharWorldSettingSilent, charWorldShowPassword, patternDotPositions, patternDrawing, patternLines, patternCurrentPos, patternSvg, patternStart, patternMove, patternEnd, openCharWorldSetting,
 charWorldConfirmShow, charWorldHint, charWorldShowHint, charWorldHintConfirmShow, aiSetCharWorldHint,
 socialCircleOn, socialInjectCount, socialInjectOn, writeCharMemory,
-memorySearchOn,
 
     };
   }

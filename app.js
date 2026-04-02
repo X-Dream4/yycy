@@ -58,7 +58,13 @@ const app = Vue.createApp({
     watch(() => charBio.value, async (val) => { await dbSet('charBio', val); });
 
     const onApp = (key) => {
-      const routes = { like: 'like.html', chat: 'chat.html', world: 'world.html', collect: 'collect.html', share: 'memory.html' };
+      const routes = {
+        like: 'like.html',
+        chat: 'chat.html',
+        world: 'world.html',
+        collect: 'collect.html',
+        share: 'memory.html'
+      };
       if (routes[key]) window.location.href = routes[key];
     };
 
