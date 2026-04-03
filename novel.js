@@ -43,8 +43,110 @@ createApp({
       return `${d.getMonth()+1}月${d.getDate()}日`;
     };
 
+    const cleanNovelRetrievalText = (text, maxLen = 240) => {
+      const s = String(text || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!s) return '';
+      return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    };
+
+    const extractNovelLeadText = (novel) => {
+      if (novel.synopsis && String(novel.synopsis).trim()) {
+        return cleanNovelRetrievalText(novel.synopsis, 260);
+      }
+      if (novel.content && String(novel.content).trim()) {
+        return cleanNovelRetrievalText(novel.content, 260);
+      }
+      if (novel.chapters && novel.chapters.length) {
+        const joined = novel.chapters
+          .slice(0, 3)
+          .map(ch => ch.summary || ch.content || '')
+          .join(' ');
+        return cleanNovelRetrievalText(joined, 260);
+      }
+      return '';
+    };
+
+    const buildNovelChapterRetrievalItem = (ch, index) => ({
+      index,
+      title: ch.title || `第${index + 1}章`,
+      summary: cleanNovelRetrievalText(ch.summary || '', 120),
+      excerpt: cleanNovelRetrievalText(ch.content || '', 150),
+      commentCount: Array.isArray(ch.comments) ? ch.comments.length : 0
+    });
+
+    const buildNovelRecentComments = (novel) => {
+      const result = [];
+
+      if (novel.chapters && novel.chapters.length) {
+        novel.chapters.forEach((ch, ci) => {
+          (ch.comments || []).forEach(c => {
+            result.push({
+              chapterIndex: ci,
+              chapterTitle: ch.title || `第${ci + 1}章`,
+              name: c.name || '',
+              text: cleanNovelRetrievalText(c.text || '', 80),
+              time: c.time || 0
+            });
+          });
+        });
+      } else {
+        (novel.comments || []).forEach(c => {
+          result.push({
+            chapterIndex: -1,
+            chapterTitle: novel.title || '',
+            name: c.name || '',
+            text: cleanNovelRetrievalText(c.text || '', 80),
+            time: c.time || 0
+          });
+        });
+      }
+
+      return result
+        .sort((a, b) => (b.time || 0) - (a.time || 0))
+        .slice(0, 12);
+    };
+
+    const buildNovelRetrievalItem = (novel) => ({
+      id: novel.id,
+      title: novel.title || '',
+      type: novel.type || '',
+      tags: Array.isArray(novel.tags) ? novel.tags : [],
+      synopsis: cleanNovelRetrievalText(novel.synopsis || '', 220),
+      leadText: extractNovelLeadText(novel),
+      chars: Array.isArray(novel.chars)
+        ? novel.chars.map(c => ({
+            name: c.name || '',
+            role: c.role === '其他' ? (c.customRole || '其他') : (c.role || '')
+          }))
+        : [],
+      charRelations: cleanNovelRetrievalText(novel.charRelations || '', 140),
+      chapterCount: Array.isArray(novel.chapters) ? novel.chapters.length : 0,
+      wordCount: novel.wordCount || 0,
+      updateTime: novel.updateTime || novel.createTime || 0,
+      chapters: Array.isArray(novel.chapters)
+        ? novel.chapters.slice(0, 20).map((ch, i) => buildNovelChapterRetrievalItem(ch, i))
+        : [],
+      recentComments: buildNovelRecentComments(novel),
+      progressChapterIndex: novelProgressMap.value[novel.id] ?? 0
+    });
+
+    const saveNovelRetrievalSnapshot = async () => {
+      const snapshot = {
+        updatedAt: Date.now(),
+        novels: novels.value
+          .slice()
+          .sort((a, b) => ((b.updateTime || b.createTime || 0) - (a.updateTime || a.createTime || 0)))
+          .slice(0, 200)
+          .map(buildNovelRetrievalItem)
+      };
+      await dbSet('retrieval_novel_snapshot', snapshot);
+    };
+
     const saveNovels = async () => {
       await dbSet('novels', JSON.parse(JSON.stringify(novels.value)));
+      await saveNovelRetrievalSnapshot();
     };
 
     const deleteNovel = async (n) => {
@@ -1293,6 +1395,7 @@ const confirmAddBookmark = async () => {
       if (currentNovel.value && currentNovel.value.id) {
         await dbSet(`novelProgress_${currentNovel.value.id}`, { chapterIndex: i });
         novelProgressMap.value = { ...novelProgressMap.value, [currentNovel.value.id]: i };
+        await saveNovelRetrievalSnapshot();
       }
       nextTick(() => {
         if (readContent.value) readContent.value.scrollTop = 0;
@@ -1318,6 +1421,7 @@ const confirmAddBookmark = async () => {
         if (n.id) {
           await dbSet(`novelProgress_${n.id}`, { chapterIndex: currentChapterIndex.value });
           novelProgressMap.value = { ...novelProgressMap.value, [n.id]: currentChapterIndex.value };
+          await saveNovelRetrievalSnapshot();
         }
 
         nextTick(() => {
@@ -1343,6 +1447,7 @@ const confirmAddBookmark = async () => {
         if (currentNovel.value && currentNovel.value.id) {
           await dbSet(`novelProgress_${currentNovel.value.id}`, { chapterIndex: currentChapterIndex.value });
           novelProgressMap.value = { ...novelProgressMap.value, [currentNovel.value.id]: currentChapterIndex.value };
+          await saveNovelRetrievalSnapshot();
         }
         nextTick(() => {
           if (readContent.value) readContent.value.scrollTop = 0;
@@ -1768,6 +1873,7 @@ Vue.watch(() => view.value, () => {
       if (savedStylePresets) stylePresets.value = savedStylePresets;
 
       await loadReadSettings();
+      await saveNovelRetrievalSnapshot();
 
       setTimeout(() => {
         lucide.createIcons();

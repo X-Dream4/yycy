@@ -178,95 +178,65 @@ createApp({
 
     // ===== 导出（含新数据）=====
     const exportData = async () => {
-      const charList = (await dbGet('charList')) || [];
-      const roomList = (await dbGet('roomList')) || [];
-      const charExtras = {};
-      for (const c of charList) {
-        charExtras[c.id] = {
-          mySettings: await dbGet(`mySettings_${c.id}`),
-          peekHistory: await dbGet(`peekHistory_${c.id}`),
-          mirrorHistory: await dbGet(`mirrorHistory_${c.id}`),
-          chatBeauty: await dbGet(`chatBeauty_${c.id}`),
-          summaries: await dbGet(`summaries_${c.id}`),
-          autoSummary: await dbGet(`autoSummary_${c.id}`),
-          chatTranslate: await dbGet(`chatTranslate_${c.id}`),
-          charStickerCats: await dbGet(`charStickerCats_${c.id}`),
-          theaterPresets: await dbGet(`theaterPresets_${c.id}`),
-          theaterHtmlPresets: await dbGet(`theaterHtmlPresets_${c.id}`),
-          theaterHistory: await dbGet(`theaterHistory_${c.id}`),
-          theaterStylePresets: await dbGet(`theaterStylePresets_${c.id}`),
-          autoSend: await dbGet(`autoSend_${c.id}`),
-          notifyOn: await dbGet(`notifyOn_${c.id}`),
-          keepAliveOn: await dbGet(`keepAliveOn_${c.id}`),
-          autoSummaryNextAt: await dbGet(`autoSummaryNextAt_${c.id}`),
-          weightedAutoSummary: await dbGet(`weightedAutoSummary_${c.id}`),
-          weightedAutoSummaryNextAt: await dbGet(`weightedAutoSummaryNextAt_${c.id}`),
-          summaryPromptPresets: await dbGet(`summaryPromptPresets_${c.id}`),
-          charMemory: await dbGet(`charMemory_${c.id}`),
-          charMemoryGroups: await dbGet(`charMemoryGroups_${c.id}`),
-          charLogs: await dbGet(`charLogs_${c.id}`),
-          charWorldLock: await dbGet(`charWorldLock_${c.id}`),
-          hotAware: await dbGet(`hotAware_${c.id}`),
-          novelAware: await dbGet(`novelAware_${c.id}`),
-          cwContacts: await dbGet(`cwContacts_${c.id}`),
-          cwPrivateChats: await dbGet(`cwPrivateChats_${c.id}`),
-          cwLocalGroups: await dbGet(`cwLocalGroups_${c.id}`),
-          notifySystemOn: await dbGet(`notifySystemOn_${c.id}`)
+      try {
+        const allEntries = await dbGetAllEntries();
+
+        const result = {
+          __fullDump: true,
+          __exportedAt: new Date().toISOString(),
+          __dbName: 'roleCardDB',
+          __storeName: 'cardData',
+          data: allEntries
         };
+
+        const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `rolecard-backup-full-${new Date().toLocaleDateString()}.json`;
+        a.click();
+
+        addLog(`全量数据已导出，共 ${Object.keys(allEntries).length} 个键`);
+      } catch (err) {
+        addLog(`全量导出失败: ${err.message}`, 'error');
       }
-      const roomExtras = {};
-      for (const r of roomList) {
-        roomExtras[r.id] = {
-          groupBeauty: await dbGet(`groupBeauty_${r.id}`),
-          groupMySettings: await dbGet(`groupMySettings_${r.id}`),
-          groupSummaries: await dbGet(`groupSummaries_${r.id}`),
-          groupPeekHistory: await dbGet(`groupPeekHistory_${r.id}`),
-          groupMirrorHistory: await dbGet(`groupMirrorHistory_${r.id}`),
-          groupStickerCats: await dbGet(`groupStickerCats_${r.id}`),
-          groupAutoSend: await dbGet(`groupAutoSend_${r.id}`),
-          groupTranslate: await dbGet(`groupTranslate_${r.id}`),
-          groupRealtimeTime: await dbGet(`groupRealtimeTime_${r.id}`),
-          groupTheaterPresets: await dbGet(`groupTheaterPresets_${r.id}`),
-          groupTheaterHtmlPresets: await dbGet(`groupTheaterHtmlPresets_${r.id}`),
-          groupTheaterHistory: await dbGet(`groupTheaterHistory_${r.id}`),
-          groupTheaterStylePresets: await dbGet(`groupTheaterStylePresets_${r.id}`),
-          groupLogs: await dbGet(`roomLogs_${r.id}`)
-        };
-      }
-      const result = {
-        charName: await dbGet('charName'), charBio: await dbGet('charBio'),
-        images: await dbGet('images'), filmImages: await dbGet('filmImages'),
-        apiConfig: await dbGet('apiConfig'), apiPresets: await dbGet('apiPresets'),
-        darkMode: await dbGet('darkMode'), wallpaper: await dbGet('wallpaper'),
-        appIcons: await dbGet('appIcons'), charList, roomList,
-        worldBooks: await dbGet('worldBooks'), worldBookCats: await dbGet('worldBookCats'),
-        collects: await dbGet('collects'), emoji: await dbGet('emoji'),
-        customFont: await dbGet('customFont'), customFontSize: await dbGet('customFontSize'),
-        randomCharList: await dbGet('randomCharList'),
-        novels: await dbGet('novels'), novelReadSettings: await dbGet('novelReadSettings'),
-        novelStylePresets: await dbGet('novelStylePresets'), novelApiConfig: await dbGet('novelApiConfig'),
-        moments: await dbGet('moments'),
-        memoryGlobalSettings: await dbGet('memoryGlobalSettings'),
-        globalLogs: await dbGet('globalLogs'),
-        charExtras, roomExtras
-      };
-           const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `rolecard-backup-${new Date().toLocaleDateString()}.json`;
-      a.click();
-      addLog('全量数据已导出');
     };
 
     const triggerImport = () => { importFile.value.click(); };
 
     const importData = async (e) => {
-      const file = e.target.files[0]; if (!file) return;
+      const file = e.target.files[0];
+      if (!file) return;
+
       try {
         const text = await file.text();
-        const data = JSON.parse(text);
+        const imported = JSON.parse(text);
+
+        // 新版：真正整库导出格式
+        if (imported && imported.__fullDump && imported.data && typeof imported.data === 'object') {
+          if (!confirm('这将使用备份中的全部数据覆盖当前数据库，确定继续吗？')) {
+            e.target.value = '';
+            return;
+          }
+
+          await dbClearAll();
+
+          const entries = Object.entries(imported.data);
+          for (const [key, value] of entries) {
+            await dbSet(key, value);
+          }
+
+          addLog(`全量数据已完整导入，共恢复 ${entries.length} 个键，请刷新页面`);
+          e.target.value = '';
+          return;
+        }
+
+        // 兼容旧版备份格式
+        const data = imported;
         const basicKeys = ['charName','charBio','images','filmImages','apiConfig','apiPresets','darkMode','wallpaper','appIcons','charList','roomList','worldBooks','worldBookCats','collects','emoji','customFont','customFontSize','randomCharList','novels','novelReadSettings','novelStylePresets','novelApiConfig','moments','memoryGlobalSettings','globalLogs'];
-        for (const k of basicKeys) { if (data[k] !== undefined && data[k] !== null) await dbSet(k, data[k]); }
+        for (const k of basicKeys) {
+          if (data[k] !== undefined && data[k] !== null) await dbSet(k, data[k]);
+        }
+
         if (data.charExtras) {
           for (const [id, extras] of Object.entries(data.charExtras)) {
             const keysToRestore = [
@@ -305,6 +275,7 @@ createApp({
             if (extras.keepAliveOn != null) await dbSet(`keepAliveOn_${id}`, extras.keepAliveOn);
           }
         }
+
         if (data.roomExtras) {
           for (const [id, extras] of Object.entries(data.roomExtras)) {
             const keysToRestore = [
@@ -328,9 +299,12 @@ createApp({
             if (extras.groupRealtimeTime != null) await dbSet(`groupRealtimeTime_${id}`, extras.groupRealtimeTime);
           }
         }
-        addLog('全量数据已导入，请刷新页面');
+
+        addLog('旧版备份已导入，请刷新页面');
         e.target.value = '';
-      } catch (err) { addLog(`导入失败: ${err.message}`, 'error'); }
+      } catch (err) {
+        addLog(`导入失败: ${err.message}`, 'error');
+      }
     };
 
     const loadStorageInfo = async () => {

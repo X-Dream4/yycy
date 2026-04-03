@@ -78,10 +78,12 @@ createApp({
     });
 
     const sortedRoomList = computed(() => {
-      return [...roomList.value].sort((a, b) => {
-        if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
-        return (b.lastTime || b.id || 0) - (a.lastTime || a.id || 0);
-      });
+      return [...roomList.value]
+        .filter(r => !r.isSocialRoom)
+        .sort((a, b) => {
+          if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
+          return (b.lastTime || b.id || 0) - (a.lastTime || a.id || 0);
+        });
     });
 
     const sortedRandomList = computed(() => {
@@ -93,6 +95,14 @@ createApp({
 
     let lucideTimer = null;
     const refreshIcons = () => { clearTimeout(lucideTimer); lucideTimer = setTimeout(() => { lucide.createIcons(); setTimeout(() => lucide.createIcons(), 200); }, 50); };
+    const applyAvatarToList = async (list) => {
+      await Promise.all((list || []).map(async (c) => {
+        const beauty = await dbGet(`chatBeauty_${c.id}`);
+        if (beauty?.charAvatar) c.avatar = beauty.charAvatar;
+        else if (beauty?.avatar) c.avatar = beauty.avatar;
+        else if (!c.avatar) c.avatar = '';
+      }));
+    };
 
     const toggleMenu = () => { menuOpen.value = !menuOpen.value; };
     const openConnectChar = () => { menuOpen.value = false; newChar.value = { name: '', world: '', persona: '', avatar: '' }; connectCharShow.value = true; nextTick(() => refreshIcons()); };
@@ -175,17 +185,11 @@ createApp({
       charList.value = chars || [];
       roomList.value = rooms || [];
 
-      for (const c of charList.value) {
-        const beauty = await dbGet(`chatBeauty_${c.id}`);
-        if (beauty && beauty.charAvatar) { c.avatar = beauty.charAvatar; }
-      }
+      await applyAvatarToList(charList.value);
 
       const randomChars = await dbGet('randomCharList');
       randomCharList.value = randomChars || [];
-      for (const c of randomCharList.value) {
-        const beauty = await dbGet(`chatBeauty_${c.id}`);
-        if (beauty && beauty.charAvatar) { c.avatar = beauty.charAvatar; }
-      }
+      await applyAvatarToList(randomCharList.value);
 
       window.addEventListener('focus', async () => {
         const [newChars, newRooms, newRandomChars] = await Promise.all([
@@ -194,14 +198,8 @@ createApp({
         charList.value = newChars || [];
         roomList.value = newRooms || [];
         randomCharList.value = newRandomChars || [];
-        for (const c of charList.value) {
-          const beauty = await dbGet(`chatBeauty_${c.id}`);
-          if (beauty && beauty.charAvatar) { c.avatar = beauty.charAvatar; }
-        }
-        for (const c of randomCharList.value) {
-          const beauty = await dbGet(`chatBeauty_${c.id}`);
-          if (beauty && beauty.charAvatar) { c.avatar = beauty.charAvatar; }
-        }
+        await applyAvatarToList(charList.value);
+        await applyAvatarToList(randomCharList.value);
         nextTick(() => refreshIcons());
       });
 

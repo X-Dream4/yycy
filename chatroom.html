@@ -34,8 +34,8 @@
     </transition>
 
     <!-- 查看过往消息按键 -->
-    <div class="history-btn-wrap" v-if="!showHistory && allMessages.length > MSG_LIMIT">
-      <button class="history-load-btn" @click="showHistory=true">查看过往消息</button>
+    <div class="history-btn-wrap" v-if="historyVisibleCount < allMessages.length">
+      <button class="history-load-btn" @click="loadMoreHistory">查看过往消息</button>
     </div>
 
     <div class="msg-list">

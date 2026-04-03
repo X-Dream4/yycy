@@ -346,6 +346,7 @@ ${fixedNpcs.length ? `固定NPC参与回复：${fixedNpcs.map(n => n.name + (n.p
         collections.value.push({ ...JSON.parse(JSON.stringify(item)), type, collectedAt: Date.now() });
       }
       await dbSet('forumCollections', JSON.parse(JSON.stringify(collections.value)));
+      await saveForumRetrievalSnapshot();
     };
 
     // ===== 收藏/稿件页 =====
@@ -588,6 +589,7 @@ ${allNpcs.length ? `参与发帖的用户：${allNpcs.map(n => n.name + (n.perso
       if (!force && cached && Date.now() - cached.time < HOT_CACHE_TTL) {
         hotList.value = cached.data;
         hotError.value = '';
+        await saveForumRetrievalSnapshot();
         return;
       }
 
@@ -604,6 +606,7 @@ ${allNpcs.length ? `参与发帖的用户：${allNpcs.map(n => n.name + (n.perso
           }));
           await dbSet(`hotCache_${type}`, { data: list, time: Date.now() });
           hotList.value = list;
+          await saveForumRetrievalSnapshot();
         } else {
           hotError.value = '暂无数据，请稍后重试';
         }
@@ -754,6 +757,7 @@ ${allNpcs.length ? `参与发帖的用户：${allNpcs.map(n => n.name + (n.perso
         if (match) {
           dimHotList.value = JSON.parse(match[0]);
           await dbSet('forumDimHotList', JSON.parse(JSON.stringify(dimHotList.value)));
+          await saveForumRetrievalSnapshot();
         }
         else alert('次元热搜格式有误，请重试');
       } catch (e) {
@@ -992,6 +996,7 @@ ${allNpcs.length ? `参与发帖的用户：${allNpcs.map(n => n.name + (n.perso
 
     const saveConversations = async () => {
       await dbSet('forumConversations', JSON.parse(JSON.stringify(conversations.value)));
+      await saveForumRetrievalSnapshot();
     };
 
     // ===== 设置页 =====
@@ -1128,9 +1133,115 @@ ${allNpcs.length ? `参与发帖的用户：${allNpcs.map(n => n.name + (n.perso
       settingsForm.value.hotPlatformOrder = hotPlatforms.value.map(p => p.key);
     };
 
+    // ===== 检索快照 =====
+    const cleanRetrievalText = (text, maxLen = 220) => {
+      const s = String(text || '')
+        .replace(/\s+/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .trim();
+      if (!s) return '';
+      return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    };
+
+    const buildForumReplyRetrievalItem = (reply) => ({
+      id: reply.id,
+      content: cleanRetrievalText(reply.content, 120),
+      time: reply.time || 0,
+      likes: reply.likes || 0
+    });
+
+    const buildForumPostRetrievalItem = (post) => ({
+      id: post.id,
+      cat: post.cat || '',
+      author: post.author || '',
+      title: cleanRetrievalText(post.title, 60),
+      content: cleanRetrievalText(post.content, 260),
+      time: post.time || 0,
+      likes: post.likes || 0,
+      replyCount: Array.isArray(post.replies) ? post.replies.length : 0,
+      repliesPreview: (post.replies || []).slice(-6).map(buildForumReplyRetrievalItem)
+    });
+
+    const buildForumCollectionRetrievalItem = (item) => ({
+      id: item.id,
+      type: item.type || '',
+      title: cleanRetrievalText(item.title || '', 60),
+      content: cleanRetrievalText(item.content || '', 180),
+      author: item.author || '',
+      cat: item.cat || '',
+      collectedAt: item.collectedAt || 0
+    });
+
+    const buildForumConversationRetrievalItem = (conv) => ({
+      id: conv.id,
+      name: conv.name || '',
+      sourcePostTitle: cleanRetrievalText(conv.sourcePost?.title || '', 60),
+      sourcePostContent: cleanRetrievalText(conv.sourcePost?.content || '', 180),
+      messages: (conv.messages || []).slice(-12).map(m => ({
+        role: m.role || '',
+        content: cleanRetrievalText(m.content, 120),
+        time: m.time || 0
+      }))
+    });
+
+    const buildHotRetrievalItem = (item, platformKey, platformLabel) => ({
+      platformKey: platformKey || '',
+      platformLabel: platformLabel || '',
+      title: cleanRetrievalText(item.title || '', 80),
+      hot: item.hot || ''
+    });
+
+    const buildDimHotRetrievalItem = (item) => ({
+      title: cleanRetrievalText(item.title || '', 80),
+      dimension: item.dimension || '',
+      heat: item.heat || ''
+    });
+
+    const saveForumRetrievalSnapshot = async () => {
+      const platformLabel =
+        hotPlatforms.value.find(p => p.key === hotPlatform.value)?.label || hotPlatform.value || '';
+
+      const snapshot = {
+        updatedAt: Date.now(),
+        profile: {
+          name: myProfile.value.name || '匿名用户'
+        },
+        categories: categories.value.map(c => c.name),
+        posts: posts.value
+          .slice()
+          .sort((a, b) => (b.time || 0) - (a.time || 0))
+          .slice(0, 300)
+          .map(buildForumPostRetrievalItem),
+        collections: collections.value
+          .slice()
+          .sort((a, b) => (b.collectedAt || 0) - (a.collectedAt || 0))
+          .slice(0, 150)
+          .map(buildForumCollectionRetrievalItem),
+        conversations: conversations.value
+          .slice()
+          .sort((a, b) => {
+            const at = (a.messages && a.messages.length) ? (a.messages[a.messages.length - 1].time || 0) : 0;
+            const bt = (b.messages && b.messages.length) ? (b.messages[b.messages.length - 1].time || 0) : 0;
+            return bt - at;
+          })
+          .slice(0, 80)
+          .map(buildForumConversationRetrievalItem),
+        hot: {
+          currentTab: hotTab.value,
+          currentPlatform: hotPlatform.value,
+          currentPlatformLabel: platformLabel,
+          list: (hotList.value || []).slice(0, 30).map(item => buildHotRetrievalItem(item, hotPlatform.value, platformLabel))
+        },
+        dimensionHot: (dimHotList.value || []).slice(0, 30).map(buildDimHotRetrievalItem)
+      };
+
+      await dbSet('retrieval_forum_snapshot', snapshot);
+    };
+
     // ===== 数据存储 =====
     const savePosts = async () => {
       await dbSet('forumPostsV2', JSON.parse(JSON.stringify(posts.value)));
+      await saveForumRetrievalSnapshot();
     };
 
     // ===== 时间格式化 =====
@@ -1205,6 +1316,7 @@ if (typeof requestNotifyPermission === 'function') requestNotifyPermission();
       const savedDimHot = await dbGet('forumDimHotList');
       if (savedDimHot && savedDimHot.length) dimHotList.value = savedDimHot;
 
+      await saveForumRetrievalSnapshot();
       fetchHotList(hotPlatform.value);
       nextTick(() => {
         refreshIcons();

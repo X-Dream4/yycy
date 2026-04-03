@@ -147,10 +147,11 @@ createApp({
     const aiReadCount = ref(20);
     const showHistory = ref(false);
     const MSG_LIMIT = 40;
+    const HISTORY_STEP = 50;
+    const historyVisibleCount = ref(MSG_LIMIT);
 
     const messages = computed(() => {
-      if (showHistory.value) return allMessages.value;
-      return allMessages.value.slice(-MSG_LIMIT);
+      return allMessages.value.slice(-historyVisibleCount.value);
     });
 
     const mySettingsShow = ref(false);
@@ -711,8 +712,6 @@ const writeCharMemory = async (targetCharId, memItem) => {
   await dbSet(key, existing);
 };
 
-const normalizeSocialName = (s) => String(s || '').trim().toLowerCase();
-
 const splitAliasText = (text) => {
   return String(text || '')
     .split(/[、，,\/|｜\s]+/)
@@ -795,15 +794,68 @@ const getAllCharacterPool = async () => {
   return Array.from(map.values());
 };
 
+const normalizeSocialName = (s) => String(s || '').trim().toLowerCase();
+
+const normalizePersonNameLoose = (s) => {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[【】\[\]（）()“”"'‘’·•・,，。!！?？:：;；\s]/g, '');
+};
+
+const isNameMatch = (candidate, rawName) => {
+  const a = normalizeSocialName(candidate);
+  const b = normalizeSocialName(rawName);
+  const al = normalizePersonNameLoose(candidate);
+  const bl = normalizePersonNameLoose(rawName);
+
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (al && bl && al === bl) return true;
+
+  // 宽松一点：允许包含匹配，解决真名/别名里夹杂前后缀的问题
+  if (al && bl && (al.includes(bl) || bl.includes(al))) return true;
+
+  return false;
+};
+
 const findCharInPoolByAnyName = (pool, rawName) => {
-  const target = normalizeSocialName(rawName);
-  if (!target) return null;
-  return pool.find(c => extractNameCandidatesFromChar(c).some(n => normalizeSocialName(n) === target)) || null;
+  if (!rawName) return null;
+
+  // 第一轮：严格/宽松精确匹配
+  const exactHit = pool.find(c => extractNameCandidatesFromChar(c).some(n => isNameMatch(n, rawName)));
+  if (exactHit) return exactHit;
+
+  // 第二轮：更宽一点，处理人设里长称呼、带备注等情况
+  const looseTarget = normalizePersonNameLoose(rawName);
+  if (!looseTarget) return null;
+
+  return pool.find(c => {
+    const candidates = extractNameCandidatesFromChar(c).map(normalizePersonNameLoose).filter(Boolean);
+    return candidates.some(n => n.includes(looseTarget) || looseTarget.includes(n));
+  }) || null;
 };
 
 const findContactByAnyName = (contacts, rawName) => {
-  const target = normalizeSocialName(rawName);
-  if (!target) return null;
+  if (!rawName) return null;
+
+  const exactHit = contacts.find(c => {
+    const names = new Set();
+    if (c.name) names.add(c.name);
+    if (c.realName) names.add(c.realName);
+    if (Array.isArray(c.aliases)) c.aliases.forEach(a => names.add(a));
+    if (c.persona) {
+      const pr = extractRealNameFromPersona(c.persona);
+      if (pr) names.add(pr);
+      extractAliasesFromPersona(c.persona).forEach(a => names.add(a));
+    }
+    return Array.from(names).some(n => isNameMatch(n, rawName));
+  });
+  if (exactHit) return exactHit;
+
+  const looseTarget = normalizePersonNameLoose(rawName);
+  if (!looseTarget) return null;
+
   return contacts.find(c => {
     const names = new Set();
     if (c.name) names.add(c.name);
@@ -814,7 +866,10 @@ const findContactByAnyName = (contacts, rawName) => {
       if (pr) names.add(pr);
       extractAliasesFromPersona(c.persona).forEach(a => names.add(a));
     }
-    return Array.from(names).some(n => normalizeSocialName(n) === target);
+    return Array.from(names)
+      .map(normalizePersonNameLoose)
+      .filter(Boolean)
+      .some(n => n.includes(looseTarget) || looseTarget.includes(n));
   }) || null;
 };
 
@@ -971,6 +1026,17 @@ const appendMirroredPrivateChat = async (ownerChar, targetChar, dialogueItems) =
   return { ownerPc, targetPc };
 };
 
+const buildPrivateThreadKey = (a, b) => {
+  const ids = [Number(a), Number(b)].filter(n => !Number.isNaN(n)).sort((x, y) => x - y);
+  return `pc_${ids.join('_')}`;
+};
+
+const markPrivateThreadFresh = async (a, b, ts = Date.now()) => {
+  const threadKey = buildPrivateThreadKey(a, b);
+  await dbSet(`last_seen_${threadKey}`, ts);
+  await dbSet(`last_backfill_${threadKey}`, ts);
+};
+
 const resolveSocialTarget = async (ownerId, rawName) => {
   const contacts = JSON.parse(JSON.stringify((await dbGet(`cwContacts_${ownerId}`)) || []));
   const pool = await getAllCharacterPool();
@@ -1085,14 +1151,27 @@ ${existingPcMsgsText ? '【两人之前的私聊记录】\n' + existingPcMsgsTex
 
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content || '';
-      const dialogueItems = parseDialogueLines(reply);
+      let dialogueItems = parseDialogueLines(reply);
 
       if (!dialogueItems.length) {
-        addCharLog(`私聊生成失败：未解析出有效对话`, 'warn');
-        return;
+        const fallbackReplies = [
+          '在，怎么了',
+          '我在，刚看到',
+          '嗯？找我有事吗',
+          '在呢，你说',
+          '怎么突然找我'
+        ];
+        dialogueItems = [
+          { sender: charName.value, content: initMsg },
+          { sender: targetChar.name, content: fallbackReplies[Math.floor(Math.random() * fallbackReplies.length)] }
+        ];
+        addCharLog(`私聊生成未按格式返回，已使用兜底对话`, 'warn');
       }
 
       const { ownerPc } = await appendMirroredPrivateChat(ownerChar, targetChar, dialogueItems);
+
+      // 真实私聊刚生成后，立刻刷新线程活跃时间，避免一打开就触发离线回填污染
+      await markPrivateThreadFresh(charId, targetChar.id);
 
       addCharLog(`私聊生成完成：${charName.value} ↔ ${targetChar.name}，共${dialogueItems.length}条`);
 
@@ -1494,7 +1573,7 @@ const lines = processedReply.split('\n').map(l => l.trim()).filter(l => l.length
             const socialPrivateMatch = line.match(/^【私信[：:](.+?)[\|｜](.+)】$/);
             const socialGroupMatch = line.match(/^【群发[：:](.+)】$/);
             if (socialPrivateMatch || socialGroupMatch) {
-              triggerSocialAction(line);
+              await triggerSocialAction(line);
               continue;
             }
           }
@@ -2137,6 +2216,24 @@ const openChatSettings = () => {
 
     const autoResize = () => { const el = inputRef.value; if (!el) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; };
     const scrollToBottom = () => { if (msgArea.value) msgArea.value.scrollTop = msgArea.value.scrollHeight; };
+
+    const loadMoreHistory = async () => {
+      if (historyVisibleCount.value >= allMessages.value.length) return;
+      const area = msgArea.value;
+      const oldHeight = area ? area.scrollHeight : 0;
+      const oldTop = area ? area.scrollTop : 0;
+
+      showHistory.value = true;
+      historyVisibleCount.value = Math.min(allMessages.value.length, historyVisibleCount.value + HISTORY_STEP);
+
+      await nextTick();
+
+      if (area) {
+        const newHeight = area.scrollHeight;
+        area.scrollTop = newHeight - oldHeight + oldTop;
+      }
+      refreshIcons();
+    };
     const toggleTranslate = async (msg) => {
       if (msg.translation && !msg.translationHidden) {
         msg.translationHidden = true;
@@ -3199,7 +3296,7 @@ if (notifySystemOnData !== null) notifySystemOn.value = notifySystemOnData;
     return {
       charName, charWorld, charPersona, myName, myPersona,
       messages, allMessages, inputText, toolbarOpen, msgArea, inputRef, appReady,
-      showHistory, MSG_LIMIT,
+      showHistory, MSG_LIMIT, historyVisibleCount, loadMoreHistory,
       mySettingsShow, chatSettingsShow, dimensionShow,
       peekSoulShow, dimensionMirrorShow, myWhisperShow, emojiShow, beautyShow,
       myNameInput, myPersonaInput, charNameInput, charWorldInput, charPersonaInput, aiReadCountInput,

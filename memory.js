@@ -248,7 +248,9 @@ createApp({
 
       for (const c of allChars.value) {
         const b = await dbGet(`chatBeauty_${c.id}`);
-        if (b && b.charAvatar) c.avatar = b.charAvatar;
+        if (b?.charAvatar) c.avatar = b.charAvatar;
+        else if (b?.avatar) c.avatar = b.avatar;
+        else if (!c.avatar) c.avatar = '';
       }
 
       await refreshCharList();
