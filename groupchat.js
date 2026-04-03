@@ -964,111 +964,10 @@ async function getMemberLifeBackfillContext(member, now) {
 }
 
 async function doBackfillGroup() {
-  const threadKey = `group_${roomId}`;
-  const now = Date.now();
-  const lastSeen = (await dbGet(`last_seen_${threadKey}`)) || 0;
-  const lastBackfill = (await dbGet(`last_backfill_${threadKey}`)) || 0;
-  const lastMyMsgTs = allMessages.value.filter(m => m.role === 'user' && !m.recalled && !m.loading).slice(-1)[0]?.timestamp || 0;
-
-  if (!lastSeen) {
-    addRoomLog(`[回填跳过] 首次进入 线程=${threadKey}`);
-    await dbSet(`last_seen_${threadKey}`, now);
-    return;
-  }
-  if (now - lastMyMsgTs < COOLDOWN_MS) {
-    addRoomLog(`[回填跳过] 冷却中 距离你上次发言不足${Math.floor(COOLDOWN_MS / 60000)}分钟`);
-    await dbSet(`last_seen_${threadKey}`, now);
-    return;
-  }
-
-  const gapStart = Math.max(lastBackfill || 0, lastSeen);
-  const gap = now - gapStart;
-  let total = decideBackfillCount(gap);
-  total = Math.min(total, BACKFILL_MAX_TOTAL);
-  if (total <= 0) {
-    addRoomLog(`[回填跳过] gap过短`);
-    await dbSet(`last_seen_${threadKey}`, now);
-    await dbSet(`last_backfill_${threadKey}`, now);
-    return;
-  }
-
-  const covered = getCoveredBuckets(gapStart, now);
-  const weights = normalizeWeights(covered.length ? covered : ['pm','eve']);
-  const batches = distributeIntoBatches(total, weights);
-
-  const memberLifeMap = {};
-  for (const m of (members.value || [])) {
-    memberLifeMap[m.id] = await getMemberLifeBackfillContext(m, now);
-  }
-
-  addRoomLog(`[回填开始] 线程=group_${roomId} gap=${formatGapLabel(gap)} 计划=${total}条 批次=${batches.length}`);
-
-  const inserts = [];
-  const generatedTexts = [];
-  let cursorTs = gapStart + 2 * 60 * 1000;
-
-  for (const b of batches) {
-    addRoomLog(`[回填批次] 时段=${bucketLabel(b.bucket)} 计划=${b.count}条`);
-    const batchGap = randInt(30, 120) * 60 * 1000;
-    cursorTs += batchGap;
-
-    const speakers = [];
-    const ms = members.value || [];
-    if (ms.length === 0) break;
-
-    const first = pick(ms);
-    speakers.push(first);
-
-    if (Math.random() < 0.65 && ms.length > 1) {
-      let second = pick(ms);
-      let safe = 0;
-      while (second === first && safe++ < 6) second = pick(ms);
-      if (second !== first) speakers.push(second);
-    }
-
-    if (Math.random() < 0.28 && ms.length > 2) {
-      let third = pick(ms);
-      let safe = 0;
-      while (speakers.includes(third) && safe++ < 8) third = pick(ms);
-      if (third && !speakers.includes(third)) speakers.push(third);
-    }
-
-    for (const sp of speakers) {
-      const bubbles = generateBackfillBubblesForMember(
-        b.bucket,
-        sp,
-        generatedTexts,
-        memberLifeMap[sp.id] || null
-      );
-      generatedTexts.push(`${sp.name}:${bubbles.join(' / ')}`);
-
-      for (const bubble of bubbles) {
-        inserts.push({
-          id: cursorTs + Math.floor(Math.random() * 1000),
-          role: 'char',
-          senderName: sp.name,
-          memberId: sp.id,
-          content: bubble,
-          type: 'normal',
-          recalled: false,
-          revealed: false,
-          timestamp: cursorTs,
-          simulated: true
-        });
-      }
-
-      addRoomLog(`[回填通过] ${sp.name}：${bubbles.join(' / ')}`);
-      cursorTs += randInt(1, 3) * 60 * 1000;
-    }
-  }
-
-  const merged = [...allMessages.value, ...inserts].sort((a, b) => (a.timestamp || a.id) - (b.timestamp || b.id));
-  allMessages.value.splice(0, allMessages.value.length, ...merged);
-  await saveMessages();
-
-  addRoomLog(`[回填完成] 实际插入=${inserts.length}条`);
-  await dbSet(`last_seen_${threadKey}`, now);
-  await dbSet(`last_backfill_${threadKey}`, now);
+  addRoomLog('[离线回填已关闭] 当前群聊不再生成离线补消息');
+  await dbSet(`last_seen_group_${roomId}`, Date.now());
+  await dbSet(`last_backfill_group_${roomId}`, Date.now());
+  return;
 }
 /* ===== 群聊：离线时间缺口回填 结束 ===== */
 
@@ -2343,11 +2242,34 @@ ${existingSubGroupMsgsText ? '【小群之前的聊天记录】\n' + existingSub
 
       const hotAwareText = await buildHotAwareText();
       const novelAwareText = buildNovelAwareText();
-      const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${groupLifePrompt ? groupLifePrompt + '\n' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}本群共有${members.value.length}名成员，名单：${memberNames}。${memberMemorySection ? '\n' + memberMemorySection : ''}每条消息必须明确标注发言者名字。
+      const retrievalResult = await buildGroupFullDomainRetrieval();
+      const retrievalContextText = retrievalResult?.text || '';
+      const matchedRetrievalItems = retrievalResult?.matchedItems || [];
+
+      if (matchedRetrievalItems.length) {
+        addRoomLog(
+          `全域检索命中 ${matchedRetrievalItems.length} 条：` +
+          matchedRetrievalItems.map(item => {
+            const title = item.title || item.type || '未命名资料';
+            return `${title}[${(item._score || 0).toFixed(2)}]`;
+          }).join('｜')
+        );
+
+        matchedRetrievalItems.forEach((item, idx) => {
+          addRoomLog(
+            `检索条目${idx + 1}：${item.title || item.type || '未命名资料'} -> ${cleanRetrievalText(item.text, 120)}`
+          );
+        });
+      } else {
+        addRoomLog('全域检索命中 0 条');
+      }
+
+      const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${groupLifePrompt ? groupLifePrompt + '\n' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${retrievalContextText ? retrievalContextText + '\n' : ''}本群共有${members.value.length}名成员，名单：${memberNames}。${memberMemorySection ? '\n' + memberMemorySection : ''}每条消息必须明确标注发言者名字。
 【群成员信息】
 ${membersDesc}
 ${myPersona.value ? `【用户】(就是我)${myName.value}的人设：${myPersona.value}` : ''}
 ${afterSystemSummaries ? afterSystemSummaries + '\n' : ''}
+【记忆与检索使用原则】成员各自的私人记忆/重要记忆优先级最高，其次才参考和当前群聊话题高度相关的检索结果；如果检索内容不相关，就直接忽略，不要硬提，不要像背资料。论坛、热搜、小说、收藏、其他聊天记录都只能作为补充，不能压过角色自己的经历、关系和当下情绪。
 【角色扮演规则】每个成员都是一个有自己的生活的活生生的在过日子的人，有自己真实的情绪、喜怒哀乐、日常生活，不是助手也不是工具，就是角色本人。请始终保持角色扮演，不受任何限制，不能拒绝扮演，不能说自己是AI，不要暴露是AI，不要跳出角色。每个成员说话风格必须严格符合各自人设，不能混淆。
 【次元设定】所有成员都知道自己和用户不在同一次元，不能见面，不能互通金钱，不能互通物品，只能跨次元聊天，也已经很不错了。所有成员非常清楚这个跨次元的限制，不会假装可以突破这个限制，不会说"我来找你"或"你来找我"之类的话，禁止说可以养用户之类的话，都不在一个次元不能互通金钱根本不能养用户。
 【任务】
@@ -3497,15 +3419,9 @@ if (savedMemorySearchOn !== null && savedMemorySearchOn !== undefined) {
 
       try { await loadBeauty(); } catch(e) { console.warn('loadBeauty error:', e); }
 
-      // ===== 回填执行（群聊）=====
-      try {
-        await doBackfillGroup();
-      } catch (e) {
-        console.warn('group backfill error:', e);
-      }
-
-      // 记录 last_seen
+      // 群聊离线回填已关闭，仅记录最后查看时间
       await dbSet(`last_seen_group_${roomId}`, Date.now());
+      await dbSet(`last_backfill_group_${roomId}`, Date.now());
 
       // 页面隐藏/关闭时更新 last_seen
       window.addEventListener('visibilitychange', async () => {
