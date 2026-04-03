@@ -1472,6 +1472,459 @@ const buildGroupLifePrompt = async () => {
   }
 };
 
+// ===== 全域自动检索 =====
+const cleanRetrievalText = (text, maxLen = 220) => {
+  const s = String(text || '')
+    .replace(/\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+  if (!s) return '';
+  return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+};
+
+const normalizeRetrievalText = (text) => {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[【】\[\]（）()“”"'‘’·•・,，。!！?？:：;；、\-/\\|｜_\s]/g, '');
+};
+
+const isWeakRetrievalToken = (token) => {
+  const t = String(token || '').trim();
+  if (!t) return true;
+  if (/^\d+$/.test(t)) return true;
+  if (t.length <= 1) return true;
+  if (/^(今天|昨天|刚刚|现在|然后|就是|那个|这个|你们|我们|他们|一下|有点|感觉|真的|还是|已经|因为|所以|但是|哈哈|嗯嗯|消息|聊天)$/i.test(t)) return true;
+  return false;
+};
+
+const buildRetrievalTokens = (text) => {
+  const raw = String(text || '').toLowerCase();
+  const tokenSet = new Set();
+
+  const wordTokens = raw.match(/[a-z0-9\u4e00-\u9fff]+/g) || [];
+  wordTokens.forEach(t => {
+    const tt = t.trim();
+    if (!isWeakRetrievalToken(tt)) tokenSet.add(tt);
+  });
+
+  const compact = normalizeRetrievalText(raw);
+  for (let i = 0; i < compact.length - 1; i++) {
+    const gram2 = compact.slice(i, i + 2);
+    if (!isWeakRetrievalToken(gram2)) tokenSet.add(gram2);
+  }
+  for (let i = 0; i < compact.length - 2; i++) {
+    const gram3 = compact.slice(i, i + 3);
+    if (!isWeakRetrievalToken(gram3)) tokenSet.add(gram3);
+  }
+
+  return Array.from(tokenSet);
+};
+
+const calcTokenOverlapScore = (a, b) => {
+  const ta = buildRetrievalTokens(a);
+  const tb = buildRetrievalTokens(b);
+  if (!ta.length || !tb.length) return 0;
+
+  const bSet = new Set(tb);
+  let hit = 0;
+  for (const t of ta) {
+    if (bSet.has(t)) hit++;
+  }
+  return hit / Math.max(Math.min(ta.length, tb.length), 1);
+};
+
+const calcContainScore = (source, query) => {
+  const s = normalizeRetrievalText(source);
+  const q = normalizeRetrievalText(query);
+  if (!s || !q) return 0;
+  if (s.includes(q) || q.includes(s)) return 0.35;
+  return 0;
+};
+
+const calcRecencyBoost = (time) => {
+  if (!time) return 0;
+  const diff = Date.now() - Number(time);
+  if (Number.isNaN(diff) || diff < 0) return 0;
+  if (diff < 6 * 3600 * 1000) return 0.12;
+  if (diff < 24 * 3600 * 1000) return 0.08;
+  if (diff < 3 * 24 * 3600 * 1000) return 0.05;
+  if (diff < 7 * 24 * 3600 * 1000) return 0.03;
+  return 0;
+};
+
+const buildGroupRetrievalNameHints = () => {
+  const hints = new Set();
+  hints.add(myName.value || '');
+  (members.value || []).forEach(m => {
+    if (m.name) hints.add(m.name);
+    const realName = extractRealNameFromPersona(m.persona || '');
+    if (realName) hints.add(realName);
+    extractAliasesFromPersona(m.persona || '').forEach(a => hints.add(a));
+  });
+  return Array.from(hints).filter(Boolean);
+};
+
+const buildGroupRetrievalQueryText = () => {
+  const recentMsgs = allMessages.value
+    .filter(m => !m.recalled && !m.loading)
+    .slice(-14)
+    .map(m => `${m.senderName || myName.value}：${m.content}`)
+    .join('\n');
+
+  const recentSummaries = summaries.value
+    .slice(-6)
+    .map(s => cleanRetrievalText(s.content, 140))
+    .join('\n');
+
+  const memberInfo = (members.value || [])
+    .map(m => `${m.name} ${m.persona || ''} ${m.world || ''}`)
+    .join('\n');
+
+  return [
+    inputText.value || '',
+    myName.value || '',
+    myPersona.value || '',
+    roomName.value || '',
+    memberInfo,
+    recentSummaries,
+    recentMsgs
+  ].join('\n');
+};
+
+const buildGroupRetrievalFocusKeywords = () => {
+  const parts = [];
+  parts.push(inputText.value || '');
+  parts.push(roomName.value || '');
+  parts.push(myName.value || '');
+  parts.push(myPersona.value || '');
+  parts.push((members.value || []).map(m => `${m.name} ${extractRealNameFromPersona(m.persona || '')} ${extractAliasesFromPersona(m.persona || '').join(' ')}`).join(' '));
+  parts.push(
+    allMessages.value
+      .filter(m => !m.recalled && !m.loading)
+      .slice(-10)
+      .map(m => m.content)
+      .join(' ')
+  );
+  return buildRetrievalTokens(parts.join(' ')).slice(0, 50);
+};
+
+const scoreRetrievalCandidate = (candidate, queryText, nameHints = [], focusKeywords = []) => {
+  const hay = `${candidate.title || ''}\n${candidate.text || ''}`;
+  const overlap = calcTokenOverlapScore(queryText, hay);
+  const contain = calcContainScore(hay, queryText);
+  const recencyBoost = calcRecencyBoost(candidate.time || 0);
+
+  let nameBoost = 0;
+  const normalizedHay = normalizeRetrievalText(hay);
+  for (const name of nameHints) {
+    const nn = normalizeRetrievalText(name);
+    if (nn && normalizedHay.includes(nn)) nameBoost += 0.06;
+  }
+  nameBoost = Math.min(nameBoost, 0.24);
+
+  let keywordBoost = 0;
+  for (const kw of focusKeywords) {
+    const kk = normalizeRetrievalText(kw);
+    if (kk && kk.length >= 2 && normalizedHay.includes(kk)) keywordBoost += 0.04;
+  }
+  keywordBoost = Math.min(keywordBoost, 0.24);
+
+  let typeBoost = 0;
+  if (candidate.type === 'group_main') typeBoost += 0.08;
+  if (candidate.type === 'group_local') typeBoost += 0.07;
+  if (candidate.type === 'private') typeBoost += 0.06;
+  if (candidate.type === 'worldbook') typeBoost += 0.05;
+  if (candidate.type === 'forum') typeBoost += 0.04;
+  if (candidate.type === 'novel') typeBoost += 0.04;
+
+  return overlap + contain + recencyBoost + nameBoost + keywordBoost + typeBoost;
+};
+
+const pushRetrievalCandidate = (arr, item) => {
+  if (!item) return;
+  if (!item.text || !String(item.text).trim()) return;
+  arr.push(item);
+};
+
+const uniqueRetrievalByText = (list) => {
+  const seen = new Set();
+  const result = [];
+  for (const item of list) {
+    const key = normalizeRetrievalText(`${item.title || ''}|${item.text || ''}`);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+};
+
+const formatRetrievalCandidate = (item) => {
+  const head = item.title ? `【${item.title}】` : `【${item.type || '相关资料'}】`;
+  return `${head}${item.text}`;
+};
+
+const pickDiversifiedRetrievals = (items, limit = 10) => {
+  const quotas = {
+    group_main: 2,
+    group_local: 2,
+    private: 2,
+    forum: 2,
+    forum_collection: 1,
+    forum_pm: 1,
+    hot: 1,
+    dim_hot: 1,
+    novel: 2,
+    collect: 2,
+    worldbook: 2,
+    charlife: 2
+  };
+
+  const typeCount = {};
+  const result = [];
+
+  for (const item of items) {
+    const type = item.type || 'other';
+    const max = quotas[type] ?? 2;
+    typeCount[type] = typeCount[type] || 0;
+    if (typeCount[type] >= max) continue;
+    result.push(item);
+    typeCount[type]++;
+    if (result.length >= limit) break;
+  }
+
+  return result;
+};
+
+const buildCurrentGroupChatCandidates = async () => {
+  const result = [];
+  const roomList = JSON.parse(JSON.stringify((await dbGet('roomList')) || []));
+  const currentRoom = roomList.find(r => r.id === roomId);
+
+  if (currentRoom) {
+    const msgs = (currentRoom.messages || []).slice(-18, -Math.min(aiReadCountInput.value || 20, 18));
+    if (msgs.length) {
+      pushRetrievalCandidate(result, {
+        type: 'group_main',
+        title: `当前群稍早记录-${currentRoom.name || roomName.value}`,
+        text: msgs.slice(-10).map(m => `${m.senderName}：${cleanRetrievalText(m.content, 60)}`).join('；'),
+        time: currentRoom.lastTime || 0
+      });
+    }
+  }
+
+  for (const member of (members.value || [])) {
+    if (!member.id) continue;
+    const localGroups = JSON.parse(JSON.stringify((await dbGet(`cwLocalGroups_${member.id}`)) || []));
+    const relatedGroups = (localGroups || [])
+      .filter(g => (g.members || []).some(mm => (members.value || []).some(rm => rm.id === mm.id || rm.name === mm.name)))
+      .slice(0, 8);
+
+    relatedGroups.forEach(g => {
+      const msgs = (g.messages || []).slice(-8);
+      if (!msgs.length) return;
+      pushRetrievalCandidate(result, {
+        type: 'group_local',
+        title: `相关小群-${g.name}`,
+        text: `成员：${(g.members || []).map(m => m.name).join('、')}；最近聊天：${msgs.map(m => `${m.senderName}：${cleanRetrievalText(m.content, 50)}`).join('；')}`,
+        time: g.lastTime || 0
+      });
+    });
+  }
+
+  return result;
+};
+
+const buildRelatedPrivateChatCandidates = async () => {
+  const result = [];
+  const memberNameSet = new Set((members.value || []).map(m => m.name));
+  for (const member of (members.value || [])) {
+    if (!member.id) continue;
+    const pcs = JSON.parse(JSON.stringify((await dbGet(`cwPrivateChats_${member.id}`)) || []));
+    (pcs || []).slice(0, 20).forEach(pc => {
+      if (!pc.otherName || !memberNameSet.has(pc.otherName)) return;
+      const msgs = (pc.messages || []).slice(-8);
+      if (!msgs.length) return;
+      pushRetrievalCandidate(result, {
+        type: 'private',
+        title: `成员私聊-${member.name}↔${pc.otherName}`,
+        text: msgs.map(m => `${m.senderName}：${cleanRetrievalText(m.content, 50)}`).join('；'),
+        time: pc.lastTime || 0
+      });
+    });
+  }
+  return result;
+};
+
+const buildForumSnapshotCandidates = async () => {
+  const snapshot = JSON.parse(JSON.stringify((await dbGet('retrieval_forum_snapshot')) || null));
+  const result = [];
+  if (!snapshot) return result;
+
+  (snapshot.posts || []).slice(0, 80).forEach(post => {
+    const repliesPreview = (post.repliesPreview || []).slice(-3).map(r => `评论：${cleanRetrievalText(r.content, 50)}`).join('；');
+    pushRetrievalCandidate(result, {
+      type: 'forum',
+      title: `论坛帖子-${post.title || '无标题'}`,
+      text: `分类：${post.cat || ''}；作者：${post.author || ''}；内容：${cleanRetrievalText(post.content, 180)}${repliesPreview ? '；' + repliesPreview : ''}`,
+      time: post.time || 0
+    });
+  });
+
+  (snapshot.collections || []).slice(0, 60).forEach(item => {
+    pushRetrievalCandidate(result, {
+      type: 'forum_collection',
+      title: `论坛收藏-${item.title || item.type || '内容'}`,
+      text: `类型：${item.type || ''}；作者：${item.author || ''}；内容：${cleanRetrievalText(item.content, 150)}`,
+      time: item.collectedAt || 0
+    });
+  });
+
+  (snapshot.conversations || []).slice(0, 40).forEach(conv => {
+    const msgs = (conv.messages || []).slice(-6).map(m => `${m.role === 'user' ? myName.value : conv.name}：${cleanRetrievalText(m.content, 50)}`).join('；');
+    pushRetrievalCandidate(result, {
+      type: 'forum_pm',
+      title: `论坛私信-${conv.name || '未知用户'}`,
+      text: `${conv.sourcePostTitle ? `来源帖：${conv.sourcePostTitle}；` : ''}${msgs}`,
+      time: (conv.messages && conv.messages[conv.messages.length - 1]?.time) || 0
+    });
+  });
+
+  if (snapshot.hot && Array.isArray(snapshot.hot.list) && snapshot.hot.list.length) {
+    pushRetrievalCandidate(result, {
+      type: 'hot',
+      title: `${snapshot.hot.currentPlatformLabel || '当前'}热搜`,
+      text: snapshot.hot.list.slice(0, 12).map((h, i) => `${i + 1}.${h.title}${h.hot ? `(${h.hot})` : ''}`).join('；'),
+      time: snapshot.updatedAt || 0
+    });
+  }
+
+  if (Array.isArray(snapshot.dimensionHot) && snapshot.dimensionHot.length) {
+    pushRetrievalCandidate(result, {
+      type: 'dim_hot',
+      title: '次元热搜',
+      text: snapshot.dimensionHot.slice(0, 12).map((h, i) => `${i + 1}.${h.title}${h.dimension ? `(${h.dimension})` : ''}`).join('；'),
+      time: snapshot.updatedAt || 0
+    });
+  }
+
+  return result;
+};
+
+const buildNovelSnapshotCandidates = async () => {
+  const snapshot = JSON.parse(JSON.stringify((await dbGet('retrieval_novel_snapshot')) || null));
+  const result = [];
+  if (!snapshot) return result;
+
+  (snapshot.novels || []).slice(0, 80).forEach(novel => {
+    const charsText = (novel.chars || []).slice(0, 6).map(c => `${c.role || ''}${c.name || ''}`).join('、');
+    const chapterText = (novel.chapters || []).slice(0, 4).map(ch => `${ch.title}：${cleanRetrievalText(ch.summary || ch.excerpt || '', 70)}`).join('；');
+    const commentsText = (novel.recentComments || []).slice(0, 3).map(c => `${c.name}：${cleanRetrievalText(c.text, 40)}`).join('；');
+
+    pushRetrievalCandidate(result, {
+      type: 'novel',
+      title: `小说-${novel.title || '未命名作品'}`,
+      text: `类型：${novel.type || ''}；标签：${(novel.tags || []).join('、')}；简介：${cleanRetrievalText(novel.synopsis || novel.leadText || '', 160)}${charsText ? `；角色：${charsText}` : ''}${novel.charRelations ? `；关系：${cleanRetrievalText(novel.charRelations, 80)}` : ''}${chapterText ? `；章节：${chapterText}` : ''}${commentsText ? `；评论：${commentsText}` : ''}`,
+      time: novel.updateTime || 0
+    });
+  });
+
+  return result;
+};
+
+const buildGlobalCollectionsCandidates = async () => {
+  const collects = JSON.parse(JSON.stringify((await dbGet('collects')) || []));
+  const result = [];
+  (collects || []).slice(0, 120).forEach(item => {
+    pushRetrievalCandidate(result, {
+      type: 'collect',
+      title: `收藏-${item.type || '内容'}`,
+      text: `${item.roomName ? `关联群聊：${item.roomName}；` : ''}${item.charName ? `关联角色：${item.charName}；` : ''}${item.reason ? `理由：${cleanRetrievalText(item.reason, 60)}；` : ''}内容：${cleanRetrievalText(item.content, 180)}`,
+      time: item.time || 0
+    });
+  });
+  return result;
+};
+
+const buildWorldBookRetrievalCandidates = () => {
+  const result = [];
+  const candidateBooks = allWorldBooks.value.filter(b => selectedWorldBooks.value.includes(b.id) || b.globalInject);
+  candidateBooks.forEach(book => {
+    pushRetrievalCandidate(result, {
+      type: 'worldbook',
+      title: `世界书-${book.name || '未命名条目'}`,
+      text: `${book.type ? `类型：${wbTypeLabel(book.type)}；` : ''}${book.keywords ? `关键词：${book.keywords}；` : ''}${cleanRetrievalText(book.content, 240)}`,
+      time: book.id || 0
+    });
+  });
+  return result;
+};
+
+const buildCharLifeRetrievalCandidates = async () => {
+  const result = [];
+  for (const m of (members.value || [])) {
+    const possibleKeys = [
+      `charLife_${m.id}`,
+      `charLifeState_${m.id}`,
+      `CharLife_${m.id}`,
+      `charLifePlan_${m.id}`,
+      `charlife_${m.id}`
+    ];
+    for (const key of possibleKeys) {
+      const data = await dbGet(key);
+      if (!data) continue;
+      let text = '';
+      if (typeof data === 'string') text = cleanRetrievalText(data, 220);
+      else if (typeof data === 'object') text = cleanRetrievalText(JSON.stringify(data), 220);
+      if (!text) continue;
+      pushRetrievalCandidate(result, {
+        type: 'charlife',
+        title: `成员生活状态-${m.name}`,
+        text,
+        time: Date.now()
+      });
+      break;
+    }
+  }
+  return result;
+};
+
+const buildGroupFullDomainRetrieval = async () => {
+  const queryText = buildGroupRetrievalQueryText();
+  const nameHints = buildGroupRetrievalNameHints();
+  const focusKeywords = buildGroupRetrievalFocusKeywords();
+
+  const candidateGroups = await Promise.all([
+    buildCurrentGroupChatCandidates(),
+    buildRelatedPrivateChatCandidates(),
+    buildForumSnapshotCandidates(),
+    buildNovelSnapshotCandidates(),
+    buildGlobalCollectionsCandidates(),
+    Promise.resolve(buildWorldBookRetrievalCandidates()),
+    buildCharLifeRetrievalCandidates()
+  ]);
+
+  const candidates = [];
+  candidateGroups.forEach(group => (group || []).forEach(item => candidates.push(item)));
+
+  const scored = uniqueRetrievalByText(
+    candidates.map(item => ({
+      ...item,
+      _score: scoreRetrievalCandidate(item, queryText, nameHints, focusKeywords)
+    }))
+  )
+    .filter(item => item._score > 0.1)
+    .sort((a, b) => b._score - a._score);
+
+  const finalPicked = pickDiversifiedRetrievals(scored, 10);
+  if (!finalPicked.length) return { text: '', matchedItems: [] };
+
+  return {
+    text: `【全域检索补充记忆】以下内容来自与当前群聊话题最相关的其他资料源，仅在相关时参考，不要生硬复述，不要像背设定：\n${finalPicked.map(formatRetrievalCandidate).join('\n')}`,
+    matchedItems: finalPicked
+  };
+};
+
 // ===== 触发群聊社交行为 =====
 const triggerSocialAction = async (line, triggerMemberName) => {
   const privateMatch = line.match(/^【私信[：:](.+?)[\|｜](.+)】$/);
