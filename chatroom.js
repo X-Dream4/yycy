@@ -68,6 +68,42 @@ createApp({
       })));
     };
 
+    const fetchFreshHotListByType = async (type) => {
+      try {
+        const res = await fetch(`https://hotapi-seven.vercel.app/api/hot?type=${type}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.data) && data.data.length) {
+          const list = data.data.slice(0, 30).map(item => ({
+            title: item.title || '',
+            hot: item.hot || ''
+          }));
+          await dbSet(`hotCache_${type}`, { data: list, time: Date.now() });
+          return list;
+        }
+      } catch (e) {
+        console.warn('fetchFreshHotListByType error:', type, e);
+      }
+      const fallback = await dbGet(`hotCache_${type}`);
+      return fallback?.data || [];
+    };
+
+    const refreshHotAwareCaches = async (platformKeys = [], force = true) => {
+      const keys = Array.isArray(platformKeys) ? platformKeys.filter(Boolean) : [];
+      if (!keys.length) return {};
+
+      const result = {};
+      for (const key of keys) {
+        if (force) {
+          result[key] = await fetchFreshHotListByType(key);
+        } else {
+          const cached = await dbGet(`hotCache_${key}`);
+          result[key] = cached?.data || [];
+        }
+      }
+      return result;
+    };
+
     const buildHotAwareText = async () => {
       if (!hotAwareOn.value || !hotAwarePlatforms.value.length) return '';
       const parts = [];
@@ -77,7 +113,7 @@ createApp({
         if (!cached || !cached.data || !cached.data.length) continue;
         const count = parseInt(hotAwareCounts.value[key]) || 5;
         const label = hotPlatformOptions.find(p => p.key === key)?.label || key;
-        const items = cached.data.slice(0, count).map((item, i) => `${i+1}.${item.title}`).join('、');
+        const items = cached.data.slice(0, count).map((item, i) => `${i + 1}.${item.title}`).join('、');
         if (items) parts.push(`${label}热搜：${items}`);
       }
       if (!parts.length) return '';
@@ -170,6 +206,8 @@ createApp({
     const charPersonaInput = ref('');
     const aiReadCountInput = ref(20);
     const realtimeTimeOn = ref(false);
+    const holidayAwareOn = ref(false);
+    const memorySearchOn = ref(true);
     const showTimestamp = ref(false);
     const tsCharPos = ref('bottom');
     const tsMePos = ref('bottom');
@@ -633,6 +671,72 @@ const applySummaryPromptPreset = (p) => {
       return `【外语模式规则】你必须用${langName}发送每一条消息。每条消息必须严格按照以下格式输出，不能有任何变化：第一行：${langName}原文。第二行：必须以【译】开头，后面紧跟简体中文翻译，不能有空格。例：（${langName}的一句话）\\n【译】这句话的简体中文翻译。每条消息都必须有【译】这一行，绝对不能省略。绝对不能把原文和译文写在同一行。绝对不能用其他格式替代【译】。如果某条消息实在无法翻译，【译】后面写「无法翻译」。`;
     };
 
+    const buildHolidayFallbackText = () => {
+      const now = new Date();
+      const month = now.getMonth() + 1;
+      const date = now.getDate();
+      const week = now.getDay();
+      const isWeekend = week === 0 || week === 6;
+
+      let holidayName = '';
+      if (month === 1 && date === 1) holidayName = '元旦';
+      else if (month === 2 && date === 14) holidayName = '情人节';
+      else if (month === 3 && date === 8) holidayName = '妇女节';
+      else if (month === 4 && date === 1) holidayName = '愚人节';
+      else if (month === 5 && date === 1) holidayName = '劳动节';
+      else if (month === 6 && date === 1) holidayName = '儿童节';
+      else if (month === 10 && date === 1) holidayName = '国庆节';
+      else if (month === 12 && date === 24) holidayName = '平安夜';
+      else if (month === 12 && date === 25) holidayName = '圣诞节';
+
+      if (holidayName) {
+        return `【今日节假日信息】今天可能是${holidayName}，属于节日氛围日。若聊天提到今天、放假、节日安排、出行、休息、补班等内容，你可以自然知道今天是节日相关时间。由于当前使用本地兜底判断，调休与官方放假安排未精确确认。`;
+      }
+
+      if (isWeekend) {
+        return `【今日节假日信息】今天是周末休息日氛围，不是已确认的法定节假日信息。你知道今天大概率属于休息时间，但调休信息未精确确认。`;
+      }
+
+      return `【今日节假日信息】今天看起来是普通工作日/上学日氛围，未识别到明确节假日；调休与法定放假信息未精确确认。`;
+    };
+
+    const buildHolidayAwareText = async () => {
+      if (!holidayAwareOn.value) return '';
+
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const dateStr = `${y}-${m}-${d}`;
+
+      try {
+        const res = await fetch(`https://timor.tech/api/holiday/info/${dateStr}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const typeVal = Number(data?.type?.type);
+        const typeName = data?.type?.name || data?.holiday?.name || '';
+        const holidayName = data?.holiday?.name || data?.type?.name || '';
+        const isHoliday = data?.holiday?.holiday === true || typeVal === 1;
+        const isWorkday = typeVal === 0;
+        const isAdjustWorkday = typeVal === 2;
+
+        if (isHoliday) {
+          return `【今日节假日信息】今天是${holidayName || typeName || '节假日'}，属于放假/假期时间。你知道今天带有节日或假期氛围，可以自然提到放假、节日安排、休息、出行等内容。`;
+        }
+        if (isAdjustWorkday) {
+          return `【今日节假日信息】今天是调休上班日${typeName ? `（${typeName}相关）` : ''}。你知道虽然临近或处于假期安排，但今天仍然需要上班/上学，能自然提到调休、补班、假期安排。`;
+        }
+        if (isWorkday) {
+          return `【今日节假日信息】今天是普通工作日，不是假期。你知道今天没有放假，可以自然提到上班、上学、工作安排。`;
+        }
+
+        return buildHolidayFallbackText();
+      } catch (e) {
+        return buildHolidayFallbackText();
+      }
+    };
+
     const wbTypeLabel = (type) => ({ jailbreak: '破限', worldview: '世界观', persona: '人设补充', prompt: '提示词' }[type] || type);
 
     const toggleWorldBook = (id) => { const idx = selectedWorldBooks.value.indexOf(id); if (idx === -1) selectedWorldBooks.value.push(id); else selectedWorldBooks.value.splice(idx, 1); };
@@ -688,6 +792,7 @@ const applySummaryPromptPreset = (p) => {
       toolbarOpen.value = false;
       if (inputRef.value) inputRef.value.style.height = 'auto';
       await saveMessages();
+      await previewFullDomainRetrievalNow('发言后预检索');
       nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
 
@@ -698,6 +803,7 @@ const applySummaryPromptPreset = (p) => {
       allMessages.value.push(msg);
       whisperText.value = '';
       await saveMessages();
+      await previewFullDomainRetrievalNow('心声后预检索');
       nextTick(() => { scrollToBottom(); refreshIcons(); });
     };
     
@@ -1356,6 +1462,32 @@ const buildGroupChatCandidates = async () => {
 
   return result;
 };
+const buildLiveHotRetrievalCandidates = async (platformKeys = []) => {
+  const result = [];
+  const keys = Array.isArray(platformKeys) ? platformKeys.filter(Boolean) : [];
+  if (!keys.length) return result;
+
+  for (const key of keys) {
+    const cached = await dbGet(`hotCache_${key}`);
+    const list = cached?.data || [];
+    if (!list.length) continue;
+
+    const label = hotPlatformOptions.find(p => p.key === key)?.label || key;
+    const text = list
+      .slice(0, 15)
+      .map((item, i) => `${i + 1}.${item.title}${item.hot ? `(${item.hot})` : ''}`)
+      .join('；');
+
+    pushRetrievalCandidate(result, {
+      type: 'hot',
+      title: `${label}实时热搜`,
+      text,
+      time: cached?.time || Date.now()
+    });
+  }
+
+  return result;
+};
 
 const buildForumSnapshotCandidates = async () => {
   const snapshot = JSON.parse(JSON.stringify((await dbGet('retrieval_forum_snapshot')) || null));
@@ -1508,7 +1640,16 @@ const buildCharLifeRetrievalCandidates = async () => {
   return result;
 };
 
-const buildFullDomainRetrievalText = async (readCount = 20) => {
+const buildFullDomainRetrievalText = async (readCount = 20, options = {}) => {
+  const { skipLog = false, logPrefix = '全域检索' } = options;
+
+  if (!memorySearchOn.value) {
+    if (!skipLog) {
+      try { await addCharLog(`${logPrefix}已关闭`); } catch (e) {}
+    }
+    return '';
+  }
+
   const queryText = buildCurrentRetrievalQueryText();
   const nameHints = buildRetrievalNameHints();
   const focusKeywords = buildRetrievalFocusKeywords();
@@ -1517,6 +1658,7 @@ const buildFullDomainRetrievalText = async (readCount = 20) => {
     Promise.resolve(buildMainChatRetrievalBlock(readCount)),
     buildPrivateChatCandidates(),
     buildGroupChatCandidates(),
+    buildLiveHotRetrievalCandidates(hotAwareOn.value ? hotAwarePlatforms.value : []),
     buildForumSnapshotCandidates(),
     buildNovelSnapshotCandidates(),
     buildGlobalCollectionsCandidates(),
@@ -1543,21 +1685,38 @@ const buildFullDomainRetrievalText = async (readCount = 20) => {
   const finalPicked = pickDiversifiedRetrievals(scored, 10);
 
   if (!finalPicked.length) {
-    try {
-      await addCharLog(`全域检索未命中有效条目`);
-    } catch (e) {}
+    if (!skipLog) {
+      try {
+        await addCharLog(`${logPrefix}未命中有效条目`);
+      } catch (e) {}
+    }
     return '';
   }
 
-  try {
-    const debugLines = finalPicked.map((item, idx) =>
-      `${idx + 1}.${item.title || item.type || '相关信息'}（score=${(item._score || 0).toFixed(2)}）=> ${cleanRetrievalText(item.text, 80)}`
-    );
-    await addCharLog(`全域检索命中：\n${debugLines.join('\n')}`);
-  } catch (e) {}
+  if (!skipLog) {
+    try {
+      const debugLines = finalPicked.map((item, idx) =>
+        `${idx + 1}.${item.title || item.type || '相关信息'}（score=${(item._score || 0).toFixed(2)}）=> ${cleanRetrievalText(item.text, 80)}`
+      );
+      await addCharLog(`${logPrefix}命中：\n${debugLines.join('\n')}`);
+    } catch (e) {}
+  }
 
   const blocks = finalPicked.map(formatRetrievalCandidate);
   return `【全域检索补充记忆】以下内容来自与你当前话题最相关的其他资料源，仅在相关时参考，不要生硬复述，不要像背设定：\n${blocks.join('\n')}`;
+};
+const previewFullDomainRetrievalNow = async (reason = '发言后预检索') => {
+  try {
+    if (hotAwareOn.value && hotAwarePlatforms.value.length) {
+      await refreshHotAwareCaches(hotAwarePlatforms.value, true);
+    }
+    const readCount = parseInt(aiReadCountInput.value) || 20;
+    await buildFullDomainRetrievalText(readCount, { skipLog: false, logPrefix: reason });
+  } catch (e) {
+    try {
+      await addCharLog(`${reason}失败：${e.message}`, 'warn');
+    } catch (err) {}
+  }
 };
 
 const resolveSocialTarget = async (ownerId, rawName) => {
@@ -1959,6 +2118,10 @@ ${existingGroupMsgsText ? '【小群之前的聊天记录】\n' + existingGroupM
       const wbPrompt = activeBooks.filter(b => b.type === 'prompt').map(b => b.content).join('；');
       if (activeBooks.length) addCharLog(`世界书触发：${activeBooks.map(b => b.name).join('、')}`);
 
+        if (hotAwareOn.value && hotAwarePlatforms.value.length) {
+          await refreshHotAwareCaches(hotAwarePlatforms.value, true);
+        }
+
         const hotAwareText = await buildHotAwareText();
         const novelAwareText = buildNovelAwareText();
 
@@ -2029,9 +2192,10 @@ ${existingGroupMsgsText ? '【小群之前的聊天记录】\n' + existingGroupM
 
       const readCount = parseInt(aiReadCountInput.value) || 20;
       const momentsText = await buildMomentsText();
-      const retrievalContextText = await buildFullDomainRetrievalText(readCount);
+      const holidayAwareText = await buildHolidayAwareText();
+      const retrievalContextText = await buildFullDomainRetrievalText(readCount, { skipLog: true, logPrefix: '回复前检索' });
 
-      const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${proxyHint ? proxyHint + '。' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${momentsText ? momentsText + '。' : ''}${wbJailbreak ? wbJailbreak + '。' : ''}${afterSystemSummaries ? afterSystemSummaries + '。' : ''}${retrievalContextText ? retrievalContextText + '\n' : ''}你现在扮演一个角色，角色名是${charName.value}。
+      const systemPrompt = `${globalInjectText ? globalInjectText + '。' : ''}${proxyHint ? proxyHint + '。' : ''}${hotAwareText ? hotAwareText + '。' : ''}${novelAwareText ? novelAwareText + '。' : ''}${holidayAwareText ? holidayAwareText + '。' : ''}${momentsText ? momentsText + '。' : ''}${wbJailbreak ? wbJailbreak + '。' : ''}${afterSystemSummaries ? afterSystemSummaries + '。' : ''}${retrievalContextText ? retrievalContextText + '\n' : ''}你现在扮演一个角色，角色名是${charName.value}。
 ${charWorld.value ? '世界观背景：' + charWorld.value + '。' : ''}${wbWorldview ? '补充世界观：' + wbWorldview + '。' : ''}${charPersona.value ? '角色人设：' + charPersona.value + '。' : ''}${wbPersona ? '人设补充：' + wbPersona + '。' : ''}
 ${charMemoryText ? charMemoryText + '\n' : ''}${myPersona.value ? '与你对话的人(我)叫' + myName.value + '，与你对话的人（我）的人设：' + myPersona.value + '。' : ''}${realtimeTimeOn.value ? `【当前时间】现在是${new Date().toLocaleString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'short'})}，你知道现在的准确时间。` : ''}
 
@@ -2528,7 +2692,20 @@ const openChatSettings = () => {
       aiReadCount.value = parseInt(aiReadCountInput.value) || 20;
       const charList = JSON.parse(JSON.stringify((await dbGet('charList')) || []));
       const idx = charList.findIndex(c => c.id === charId);
-      if (idx !== -1) { charList[idx].name = charName.value; charList[idx].world = charWorld.value; charList[idx].persona = charPersona.value; charList[idx].aiReadCount = aiReadCount.value; charList[idx].selectedWorldBooks = JSON.parse(JSON.stringify(selectedWorldBooks.value)); charList[idx].realtimeTimeOn = realtimeTimeOn.value; charList[idx].socialCircleOn = socialCircleOn.value; charList[idx].socialInjectCount = socialInjectCount.value; charList[idx].socialInjectOn = socialInjectOn.value; await dbSet('charList', charList); }
+      if (idx !== -1) {
+        charList[idx].name = charName.value;
+        charList[idx].world = charWorld.value;
+        charList[idx].persona = charPersona.value;
+        charList[idx].aiReadCount = aiReadCount.value;
+        charList[idx].selectedWorldBooks = JSON.parse(JSON.stringify(selectedWorldBooks.value));
+        charList[idx].realtimeTimeOn = realtimeTimeOn.value;
+        charList[idx].holidayAwareOn = holidayAwareOn.value;
+        charList[idx].memorySearchOn = memorySearchOn.value;
+        charList[idx].socialCircleOn = socialCircleOn.value;
+        charList[idx].socialInjectCount = socialInjectCount.value;
+        charList[idx].socialInjectOn = socialInjectOn.value;
+        await dbSet('charList', charList);
+      }
     };
 
     const openDimensionLink = () => { toolbarOpen.value = false; dimensionShow.value = true; nextTick(() => refreshIcons()); };
@@ -3753,7 +3930,7 @@ if (keepAliveData) {
         foreignLang.value = translateSettings.foreignLang || '日语';
         foreignLangCustom.value = translateSettings.foreignLangCustom || '';
       }
-      if (char) { charName.value = char.name; charWorld.value = char.world || ''; charPersona.value = char.persona || ''; allMessages.value = char.messages || []; aiReadCount.value = char.aiReadCount || 20; aiReadCountInput.value = char.aiReadCount || 20; isBlocked.value = char.isBlocked || false; iBlockedByChar.value = char.iBlockedByChar || false; realtimeTimeOn.value = char.realtimeTimeOn || false; socialCircleOn.value = char.socialCircleOn || false; socialInjectCount.value = char.socialInjectCount || 5; socialInjectOn.value = char.socialInjectOn !== false; }
+      if (char) { charName.value = char.name; charWorld.value = char.world || ''; charPersona.value = char.persona || ''; allMessages.value = char.messages || []; aiReadCount.value = char.aiReadCount || 20; aiReadCountInput.value = char.aiReadCount || 20; isBlocked.value = char.isBlocked || false; iBlockedByChar.value = char.iBlockedByChar || false; realtimeTimeOn.value = char.realtimeTimeOn || false; holidayAwareOn.value = char.holidayAwareOn || false; memorySearchOn.value = char.memorySearchOn !== false; socialCircleOn.value = char.socialCircleOn || false; socialInjectCount.value = char.socialInjectCount || 5; socialInjectOn.value = char.socialInjectOn !== false; }
       if (mySettings) { myName.value = mySettings.name || '我'; myPersona.value = mySettings.persona || ''; }
       if (api) apiConfig.value = api;
       if (ph) peekHistory.value = ph;
@@ -3879,7 +4056,7 @@ summaryPresetPickerShow,
       onTouchStart, onTouchEnd, onTouchMove, onMouseDown, onMouseUp,
       quoteMsg, recallMsg, toggleRecallReveal, deleteMsg, editMsg, confirmEdit, cancelEdit,
       startMultiSelect, toggleSelect, deleteSelected, cancelMultiSelect,
-      messagesWithTime, formatMsgTime, realtimeTimeOn,
+      messagesWithTime, formatMsgTime, realtimeTimeOn, holidayAwareOn, memorySearchOn,
       showTimestamp, tsCharPos, tsMePos, tsFormat, tsCustom, tsSize, tsColor, tsOpacity, tsMeColor, tsMeOpacity, getMsgTimestamp,autoResize,
       isBlocked, blockShow, openBlock, confirmBlock, confirmUnblock, iBlockedByChar,
       deleteCharShow, confirmDeleteChar, translateOn, translateLang, toggleTranslate,
